@@ -1,6 +1,6 @@
 #if defined(ENGINE_ENABLE_HIP)
-#include "src/models/qwen/hip/kernels/prefill_quant_gemm.hpp"
 #include "src/models/qwen/hip/detail/ssm_norm.hpp"
+#include "src/models/qwen/hip/kernels/prefill_quant_gemm.hpp"
 
 namespace gufo::hip {
 
