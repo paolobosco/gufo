@@ -1831,6 +1831,56 @@ void TestToolSchemaSafety() {
 // syntax for every schema: strings are raw text and other values follow their
 // schema as far as it is supported. No schema, tool choice or strict flag may
 // move a native model to a JSON envelope (#383, #438).
+// A Qwen value follows the header's "\n", so a delimiter begun by that
+// newline closes the parameter for the HTTP parser. The grammar must not
+// accept such bytes as data, or one constrained call parses as several
+// (parallel_tool_calls:false returning two calls).
+void TestQwenValueFraming() {
+  using Format = JsonConstraint::ToolFormat;
+  const auto schema = parse(R"({"type":"object","properties":{
+    "value":{"type":"string","const":"\n</parameter>\n</｜DSML｜parameter>\\"}},
+    "required":["value"],"additionalProperties":false})");
+  const auto parameters =
+      JsonConstraint::ToolParameters(schema, false, Format::kQwen);
+  assert(parameters);
+  const auto single = JsonConstraint::WithTools(
+      nullptr, {{"record", parameters}}, true, false, Format::kQwen);
+  const std::string head =
+      "<tool_call>\n<function=record>\n<parameter=value>\n";
+  const std::string compact = head + "</parameter>\n</function>\n</tool_call>";
+  assert(!Accepts(*single, compact + "\n" + compact));
+  assert(!Accepts(*single, compact));
+  // The canonical empty value and inline tag text stay valid data.
+  assert(Accepts(*single, head + "\n</parameter>\n</function>\n</tool_call>"));
+  assert(Accepts(
+      *single,
+      head + "</parameter> x\n</parameter>\n</function>\n</tool_call>"));
+  // Strict literals are checked with the same framing.
+  const auto framed = parse(R"({"type":"object","properties":{
+    "value":{"type":"string","const":"</parameter>\nX"}},
+    "required":["value"],"additionalProperties":false})");
+  const auto strict =
+      JsonConstraint::ToolParameters(framed, true, Format::kQwen);
+  if (strict) {
+    const auto grammar = JsonConstraint::WithTools(
+        nullptr, {{"record", strict}}, true, false, Format::kQwen);
+    assert(!Accepts(
+        *grammar,
+        head + "</parameter>\nX\n</parameter>\n</function>\n</tool_call>"));
+  }
+  // DeepSeek values have no leading frame; its grammar is unchanged.
+  const auto deepseek = JsonConstraint::WithTools(
+      nullptr,
+      {{"record",
+        JsonConstraint::ToolParameters(schema, false, Format::kDeepSeek)}},
+      true, false, Format::kDeepSeek);
+  assert(Accepts(*deepseek,
+                 "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\"record\">\n"
+                 "<｜DSML｜parameter name=\"value\" "
+                 "string=\"true\">x</｜DSML｜parameter>\n"
+                 "</｜DSML｜invoke>\n</｜DSML｜tool_calls>"));
+}
+
 void TestNativeToolSchemaMatrix() {
   using Format = JsonConstraint::ToolFormat;
   struct Property {
@@ -2057,6 +2107,7 @@ int main(int argc, char** argv) {
   TestMixedBestEffortToolRoutes();
   TestToolSchemaSafety();
   TestNativeToolSchemaMatrix();
+  TestQwenValueFraming();
   TestLlamaCppToolGrammarGoldens();
   std::cout << "JSON constraints: language, schema, Unicode and sampler checks "
                "passed\n";

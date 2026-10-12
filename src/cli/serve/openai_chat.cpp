@@ -1563,7 +1563,10 @@ void ParseQwenCalls(
             // Compact legacy headers also admit compact closers. A canonical
             // header uses the complete delimiter: apparent tags on the same
             // line remain argument data, as in llama.cpp.
-            if (tail.starts_with('\n') || tail.starts_with("\r\n") ||
+            // The closer's line break matches the value's opening frame,
+            // as StripFramingNewlines reads it and the grammar writes it.
+            if (tail.starts_with('\n') ||
+                (body.starts_with("\r\n") && tail.starts_with("\r\n")) ||
                 (!canonical_parameters &&
                  (Trim(tail).starts_with("</function>") ||
                   Trim(tail).starts_with("<parameter="))))

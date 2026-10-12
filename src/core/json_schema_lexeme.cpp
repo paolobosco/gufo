@@ -750,10 +750,15 @@ private:
 // literal data. The enclosing grammar supplies the parameter delimiter.
 class RawStringLexeme final : public JsonSchemaLexeme {
 public:
-  RawStringLexeme(const json::Value& schema, std::string delimiter)
+  RawStringLexeme(const json::Value& schema, std::string delimiter,
+                  std::string_view preceding)
       : string_(JsonSchemaLexeme::String(schema)),
         delimiter_(std::move(delimiter)),
         can_close_(delimiter_.size(), true) {
+    for (initial_ = std::min(preceding.size(), delimiter_.size() - 1);
+         initial_ && !preceding.ends_with(delimiter_.substr(0, initial_));
+         --initial_) {
+    }
     for (std::size_t matched = 1; matched < delimiter_.size(); ++matched) {
       const auto suffix = delimiter_.substr(0, matched) + delimiter_;
       can_close_[matched] = suffix.find(delimiter_) == matched;
@@ -781,7 +786,8 @@ public:
   Match Advance(std::string& encoded, unsigned char byte) const override {
     auto state = encoded.empty() ? std::string() : encoded.substr(1);
     std::string suffix(delimiter_.substr(
-        0, encoded.empty() ? 0 : static_cast<unsigned char>(encoded.front())));
+        0, encoded.empty() ? initial_
+                           : static_cast<unsigned char>(encoded.front())));
     suffix += static_cast<char>(byte);
     auto matched = std::min(suffix.size(), delimiter_.size());
     while (matched && !suffix.ends_with(delimiter_.substr(0, matched)))
@@ -822,6 +828,7 @@ private:
   std::shared_ptr<const JsonSchemaLexeme> string_;
   std::string delimiter_;
   std::vector<bool> can_close_;
+  std::size_t initial_{0};
 };
 
 // Native calls can start before </think>. Keep literal marker mentions and
@@ -945,8 +952,10 @@ std::shared_ptr<const JsonSchemaLexeme> JsonSchemaLexeme::String(
   return std::make_shared<StringLexeme>(schema);
 }
 std::shared_ptr<const JsonSchemaLexeme> JsonSchemaLexeme::RawString(
-    const json::Value& schema, std::string delimiter) {
-  return std::make_shared<RawStringLexeme>(schema, std::move(delimiter));
+    const json::Value& schema, std::string delimiter,
+    std::string_view preceding) {
+  return std::make_shared<RawStringLexeme>(schema, std::move(delimiter),
+                                           preceding);
 }
 std::shared_ptr<const JsonSchemaLexeme> JsonSchemaLexeme::Whitespace() {
   static const auto whitespace = std::make_shared<WhitespaceLexeme>();

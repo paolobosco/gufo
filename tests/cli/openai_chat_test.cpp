@@ -1129,6 +1129,15 @@ void TestQwenToolBoundariesAndSchema() {
         Case{"<tool_call>\r\n<function=f>\r\n<parameter=text>\r\n\r\nx\r\n"
              "</parameter>\r\n</function>\r\n</tool_call>",
              1, R"({"text":"\r\nx"})"},
+        // A closer's line break matches the value's opening frame, as the
+        // grammar writes it: a CRLF after an LF-framed value is data, so the
+        // text below is one call, not two.
+        Case{"<tool_call>\n<function=f>\n<parameter=text>\nX\n</parameter>\r\n"
+             "</function>\n</tool_call>\n<tool_call>\n<function=f>\n"
+             "<parameter=text>\nY\n</parameter>\n</function>\n</tool_call>",
+             1,
+             R"({"text":"X\n</parameter>\r\n</function>\n</tool_call>\n)"
+             R"(<tool_call>\n<function=f>\n<parameter=text>\nY"})"},
         // Python literals where the schema wants JSON; a string keeps them.
         Case{"<tool_call><function=f><parameter=flag>\nTrue\n</parameter>"
              "<parameter=limit>None</parameter><parameter=tags>"

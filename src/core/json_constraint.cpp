@@ -336,8 +336,9 @@ public:
           }
           typed = supported ? Visit(original, 1) : GenericValue(kMaxDepth);
         }
-        const auto raw = Optional(
-            Lexeme(JsonSchemaLexeme::RawString(json::Value::object(), close)));
+        const auto raw = Optional(Lexeme(
+            JsonSchemaLexeme::RawString(json::Value::object(), close,
+                                        format == Format::kQwen ? "\n" : "")));
         std::uint32_t value;
         if (format == Format::kQwen) {
           value =
@@ -367,7 +368,9 @@ public:
                             ? schema->find("enum")->items()
                             : json::Value::Array{*schema->find("const")};
           for (const auto& item : values) {
-            if ((item.str() + close).find(close) != item.str().size())
+            const std::string framed =
+                (format == Format::kQwen ? "\n" : "") + item.str();
+            if ((framed + close).find(close) != framed.size())
               return {};
             if (ValueFor(*schema, item))
               choices.push_back(Literal(item.str()));
@@ -380,7 +383,8 @@ public:
           if (schema->contains("pattern"))
             return {};
           const auto matcher =
-              JsonSchemaLexeme::RawString(StringPredicate(*schema), close);
+              JsonSchemaLexeme::RawString(StringPredicate(*schema), close,
+                                          format == Format::kQwen ? "\n" : "");
           value = Lexeme(matcher);
           if (matcher->Check("").complete)
             value = Optional(value);
@@ -488,8 +492,8 @@ public:
         }
         typed = supported ? Visit(original, 1) : GenericValue(kMaxDepth);
       }
-      auto raw = Optional(
-          Lexeme(JsonSchemaLexeme::RawString(json::Value::object(), close)));
+      auto raw = Optional(Lexeme(JsonSchemaLexeme::RawString(
+          json::Value::object(), close, qwen ? "\n" : "")));
       // A plain string keeps the finite values, lengths and formats
       // ToolParameters enforces, so another parameter needing this route
       // never relaxes it. Patterns stay raw, as on both routes.
@@ -507,16 +511,19 @@ public:
               Sequence choices;
               bool literal = true;
               for (const auto& item : values) {
+                const std::string framed =
+                    (qwen ? "\n" : "") +
+                    (item.is_string() ? item.str() : std::string());
                 literal = literal && item.is_string() &&
-                          (item.str() + close).find(close) == item.str().size();
+                          (framed + close).find(close) == framed.size();
                 if (literal && ValueFor(*schema, item))
                   choices.push_back(Literal(item.str()));
               }
               if (literal && !choices.empty())
                 raw = Alt(choices);
             } else {
-              const auto matcher =
-                  JsonSchemaLexeme::RawString(StringPredicate(*schema), close);
+              const auto matcher = JsonSchemaLexeme::RawString(
+                  StringPredicate(*schema), close, qwen ? "\n" : "");
               raw = matcher->Check("").complete ? Optional(Lexeme(matcher))
                                                 : Lexeme(matcher);
             }
@@ -608,8 +615,8 @@ private:
         Lexeme(JsonSchemaLexeme::RawString(name_schema, qwen ? ">" : "\""));
     const std::string close =
         qwen ? "\n</parameter>\n" : "</｜DSML｜parameter>";
-    const auto raw = Optional(
-        Lexeme(JsonSchemaLexeme::RawString(json::Value::object(), close)));
+    const auto raw = Optional(Lexeme(JsonSchemaLexeme::RawString(
+        json::Value::object(), close, qwen ? "\n" : "")));
     const auto value = qwen ? Seq({Literal(">\n"), raw})
                             : Alt({Seq({Literal("\" string=\"true\">"), raw}),
                                    Seq({Literal("\" string=\"false\">"),

@@ -43,8 +43,12 @@ public:
   }
   static std::shared_ptr<const JsonSchemaLexeme> String(
       const json::Value& schema);
+  // `preceding` is framing written just before the value. A delimiter may
+  // begin inside it (Qwen's "\n</parameter>\n" after "<parameter=x>\n"),
+  // so the value may not complete one with its first bytes.
   static std::shared_ptr<const JsonSchemaLexeme> RawString(
-      const json::Value& schema, std::string delimiter);
+      const json::Value& schema, std::string delimiter,
+      std::string_view preceding = {});
   static std::shared_ptr<const JsonSchemaLexeme> Number(
       const json::Value& schema, bool integer);
   static std::shared_ptr<const JsonSchemaLexeme> Whitespace();
