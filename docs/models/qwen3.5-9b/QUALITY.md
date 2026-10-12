@@ -81,7 +81,8 @@ previous and the new build, and run `tools/qwen27b/check.py kernels`.
   value-head order for 32 value / 16 key heads.
 - Long-context behavior with the native 262,144-token context.
 - Template hashes of individual downloaded GGUF files (read here from
-  repository metadata).
+  repository metadata); `tools/qwen35_9b/inspect_gguf.py FILE` prints them
+  with the layer counts and tensor formats Gufo checks.
 - MTP: `qwen_mtp_gpu_test MTP.gguf MTP.gguf` with `unsloth/Qwen3.5-9B-MTP-GGUF`,
   acceptance and greedy MTP = AR.
 - Vision: `qwen27b_vision_test MMPROJ IMAGE OUT 4096` with
