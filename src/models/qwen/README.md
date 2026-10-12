@@ -1,10 +1,13 @@
 # Qwen implementation
 
 The dense Qwen3.8 27B runtime owns target inference, native MTP and DFlash2.
+Qwen3.5 9B and its fine-tunes run on the same runtime; shape-specialized fast
+paths remain qualified for 27B only.
 Shared Qwen tokenization, chat templates, vision and sampling are also used by
 Flash-Next. Audio implementations are model-private.
 
 [27B usage](../../../docs/models/qwen3.8-27b/README.md) ·
+[9B usage](../../../docs/models/qwen3.5-9b/README.md) ·
 [27B quality](../../../docs/models/qwen3.8-27b/QUALITY.md) ·
 [Flash-Next](../../../docs/models/qwen3.8-flash-next/README.md)
 

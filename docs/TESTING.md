@@ -89,6 +89,7 @@ Model-owned procedures and outstanding qualification gaps live with the model:
 - [DeepSeek V4 Flash](models/deepseek-v4-flash/QUALITY.md)
 - [Qwen3.8 27B](models/qwen3.8-27b/QUALITY.md)
 - [Qwen3.8 Flash-Next](models/qwen3.8-flash-next/QUALITY.md)
+- [Qwen3.5 9B](models/qwen3.5-9b/QUALITY.md)
 - [MiniMax H3](models/minimax-h3/QUALITY.md)
 - [Qwen3-TTS](models/qwen3-tts/QUALITY.md)
 - [Qwen3-ASR](models/qwen3-asr/QUALITY.md)

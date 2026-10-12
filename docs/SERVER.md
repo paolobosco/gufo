@@ -194,6 +194,10 @@ counted as an exact cache replay.
 
 `--think auto` uses the model's default. Qwen27B and Flash-Next match the
 official Jinja: thinking enabled, `xhigh` effort, prior reasoning preserved.
+Qwen3.5 9B follows its artifact template: thinking off for the
+`unsloth/Qwen3.5-9B-GGUF` template, on for the official one; it has no effort
+levels and keeps reasoning only after the last user query, so
+`reasoning_effort` and `preserve_thinking` only toggle thinking on.
 Use `--think off` or `chat_template_kwargs.enable_thinking=false` for direct
 answers. DeepSeek retains its chat-mode default. Quality comparisons must use
 the same reasoning mode and effort.
