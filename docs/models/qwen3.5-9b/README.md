@@ -44,9 +44,10 @@ and IQ2/IQ1 artifacts are rejected at load.
 The compiled formatter follows the Qwen3.5 template rules: no reasoning-effort
 levels and no preserved thinking; reasoning of earlier turns is rendered only
 after the last user query, and inline `<think>` in assistant content is split
-out when `reasoning_content` is absent. `reasoning_effort` and
-`preserve_thinking` controls are accepted and ignored, except that a non-off
-top-level `reasoning_effort` enables thinking.
+out when `reasoning_content` is absent. `preserve_thinking` is accepted and
+ignored. A non-off `reasoning_effort` (top-level, `chat_template_kwargs` or
+`--reasoning-effort`) selects no effort level but turns thinking on unless
+thinking is set explicitly.
 
 The thinking default (`--think auto`) comes from the artifact's template:
 

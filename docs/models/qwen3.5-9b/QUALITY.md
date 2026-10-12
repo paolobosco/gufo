@@ -13,7 +13,7 @@ check remain open; a skipped GPU test is not a pass.
 | Qwen3.8 prompts and cache-identity fields unchanged | CPU tests pass |
 | MTP binding at `blk.{num_layers}` and quantized MTP oracle on synthetic GGUFs | CPU test passes |
 | CPU dequantization of IQ4_NL, IQ4_XS and IQ3_S against the canonical routines | CPU test passes |
-| 24-head WMMA prefill machine code before and after the 16-head instantiation | Identical code objects (gfx1151 ISA, same toolchain) |
+| 24-head WMMA prefill kernels before and after the 16-head instantiation | Identical gfx1151 instruction bytes and resources (same toolchain); only the kernel symbol names change |
 | WMMA prefill attention, 16 query heads, FP64 oracle on KV-group boundary heads and log-sum-exp | Compiled; GPU run pending |
 | Baseline attention refuses more than 16,128 visible tokens before writing KV | Compiled; GPU run pending |
 | `qwen35_9b_target_test`: prefill versus decode across 16,128 tokens, chunk invariance, verification widths 2–8, C2–C8, CPU teacher forcing, 262,144-token cache | Compiled; GPU run pending |
