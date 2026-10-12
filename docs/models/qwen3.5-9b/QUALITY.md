@@ -82,7 +82,8 @@ previous and the new build, and run `tools/qwen27b/check.py kernels`.
 - Long-context behavior with the native 262,144-token context.
 - Template hashes of individual downloaded GGUF files (read here from
   repository metadata); `tools/qwen35_9b/inspect_gguf.py FILE` prints them
-  with the layer counts and tensor formats Gufo checks.
+  with the thinking default, the layer counts and every tensor whose format
+  the loader rejects, also for vision projectors.
 - MTP: `qwen_mtp_gpu_test MTP.gguf MTP.gguf` with `unsloth/Qwen3.5-9B-MTP-GGUF`,
   acceptance and greedy MTP = AR.
 - Vision: `qwen27b_vision_test MMPROJ IMAGE OUT 4096` with
