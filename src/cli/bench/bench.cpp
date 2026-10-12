@@ -35,6 +35,7 @@
 #include "src/models/qwen/hip/dflash.hpp"
 #include "src/models/qwen/hip/executor.hpp"
 #include "src/models/qwen/hip/mtp.hpp"
+#include "src/models/qwen36_35b_a3b/engine.hpp"
 #endif
 
 namespace gufo::cli {
@@ -202,7 +203,7 @@ void RegisterBenchOptions(ArgParser& parser, BenchOptions& opt,
                    "DeepSeek V4 Flash DSpark support GGUF", "Speculative",
                    &opt.dspark_model_path);
   parser.AddOption("", "--mtp-model", "PATH",
-                   "Path to quantized Qwen MTP draft head GGUF file",
+                   "Qwen MTP draft head GGUF (Qwen3.6 uses its native MTP)",
                    "Speculative", &opt.mtp_model_path);
   parser.AddCustomOption(
       "", "--draft-tokens", "N",
@@ -871,14 +872,77 @@ bool IsQwen38FlashNext(const core::GgufReader& reader) {
   return reader.GetMetadataString("general.architecture") == "qwen4exp";
 }
 
-int RunQwen38FlashNextBenchmark(
+bool IsQwen36(const core::GgufReader& reader) {
+  return reader.GetMetadataString("general.architecture") == "qwen35moe";
+}
+
+struct FlashNextBenchEngine {
+  using Model = models::qwen38_flash_next::Model;
+  using Session = models::qwen38_flash_next::Session;
+  static constexpr std::string_view kName = "Qwen3.8-Flash-Next";
+  static constexpr std::string_view kShortName = "Flash-Next";
+  // The MTP head is a separate sidecar.
+  static std::string_view MtpOptionError(const BenchOptions& options,
+                                         bool mtp) {
+    return mtp && options.mtp_model_path.empty()
+               ? "--speculative mtp requires --mtp-model"
+               : std::string_view{};
+  }
+  static std::shared_ptr<Model> Load(const BenchOptions& options,
+                                     std::uint32_t context, bool mtp,
+                                     std::string* error) {
+    return Model::Load(options.model_path,
+                       models::qwen38_flash_next::ModelOptions{
+                           .max_context = context,
+                           .mtp_model_path = mtp ? options.mtp_model_path : "",
+                           .max_draft_tokens =
+                               std::max<std::uint32_t>(1, options.draft_tokens),
+                           .vision_model_path = {},
+                           .decode_concurrency = 1,
+                       },
+                       error);
+  }
+};
+
+struct Qwen36BenchEngine {
+  using Model = models::qwen36_35b_a3b::Model;
+  using Session = models::qwen36_35b_a3b::Session;
+  static constexpr std::string_view kName = "Qwen3.6-35B-A3B";
+  static constexpr std::string_view kShortName = "Qwen3.6";
+  // The MTP block is part of the target artifact.
+  static std::string_view MtpOptionError(const BenchOptions& options, bool) {
+    return options.mtp_model_path.empty()
+               ? std::string_view{}
+               : "MTP is native to the artifact; remove --mtp-model";
+  }
+  static std::shared_ptr<Model> Load(const BenchOptions& options,
+                                     std::uint32_t context, bool mtp,
+                                     std::string* error) {
+    return Model::Load(options.model_path,
+                       models::qwen36_35b_a3b::ModelOptions{
+                           .max_context = context,
+                           .mtp = mtp,
+                           .max_draft_tokens =
+                               std::max<std::uint32_t>(1, options.draft_tokens),
+                           .vision_model_path = {},
+                           .decode_concurrency = 1,
+                       },
+                       error);
+  }
+};
+
+// Flash-Next and Qwen3.6 share the session API, so one C1 benchmark serves
+// both; Engine supplies the types, display names, MTP contract and loader.
+template<class Engine>
+int RunQwenMoeBenchmark(
     const BenchOptions& options,
     const std::shared_ptr<const core::GgufReader>& reader,
     std::chrono::steady_clock::time_point model_load_start) {
-  namespace qfn = models::qwen38_flash_next;
+  constexpr std::string_view name = Engine::kName;
+  constexpr std::string_view short_name = Engine::kShortName;
   int device_count = 0;
   if (hipGetDeviceCount(&device_count) != hipSuccess || device_count == 0) {
-    std::cerr << "Error: no HIP GPU is available for Qwen3.8-Flash-Next\n";
+    std::cerr << "Error: no HIP GPU is available for " << name << '\n';
     PrintModelLoadTime(model_load_start, false);
     return 1;
   }
@@ -901,46 +965,43 @@ int RunQwen38FlashNextBenchmark(
                 options.validate_prefill_tokens + 1});
   const bool mtp = options.speculative_backend == "mtp";
   if (!options.speculative_backend.empty() && !mtp) {
-    std::cerr << "Error: Qwen3.8-Flash-Next supports only --speculative mtp "
-                 "or off\n";
+    std::cerr << "Error: " << name
+              << " supports only --speculative mtp or off\n";
     return 1;
   }
-  if (mtp && options.mtp_model_path.empty()) {
-    std::cerr << "Error: --speculative mtp requires --mtp-model\n";
+  if (const std::string_view mtp_error = Engine::MtpOptionError(options, mtp);
+      !mtp_error.empty()) {
+    std::cerr << "Error: " << mtp_error << '\n';
     return 1;
   }
   if (options.concurrency != std::vector<std::size_t>{1}) {
-    std::cerr << "Error: Flash-Next bench supports C1; use the serving "
-                 "benchmark for concurrent requests\n";
+    std::cerr << "Error: " << short_name
+              << " bench supports C1; use the serving benchmark for "
+                 "concurrent requests\n";
     return 1;
   }
   if (mtp && options.min_draft_tokens != 1) {
-    std::cerr << "Error: Flash-Next MTP requires --min-draft-tokens 1\n";
+    std::cerr << "Error: " << short_name
+              << " MTP requires --min-draft-tokens 1\n";
     return 1;
   }
   if (required_context > std::numeric_limits<std::uint32_t>::max()) {
-    std::cerr << "Error: Flash-Next context is out of range\n";
+    std::cerr << "Error: " << short_name << " context is out of range\n";
     return 1;
   }
 
   std::string error;
-  auto model = qfn::Model::Load(
-      options.model_path,
-      qfn::ModelOptions{
-          .max_context = static_cast<std::uint32_t>(required_context),
-          .mtp_model_path = mtp ? options.mtp_model_path : "",
-          .max_draft_tokens = std::max<std::uint32_t>(1, options.draft_tokens),
-      },
-      &error);
+  auto model = Engine::Load(
+      options, static_cast<std::uint32_t>(required_context), mtp, &error);
   if (model == nullptr) {
-    std::cerr << "Error creating Qwen3.8-Flash-Next model: " << error << '\n';
+    std::cerr << "Error creating " << name << " model: " << error << '\n';
     PrintModelLoadTime(model_load_start, false);
     return 1;
   }
   PrintModelLoadTime(model_load_start);
 
   // Repeat a fixed token pattern for reproducible timing. It uses far fewer
-  // distinct PLE rows than varied requests.
+  // distinct Flash-Next PLE rows than varied requests.
   std::vector<std::int32_t> tokens;
   {
     const auto pattern = model->Tokenize(
@@ -973,14 +1034,12 @@ int RunQwen38FlashNextBenchmark(
         std::span(tokens).first(options.validate_prefill_tokens);
     if (!sequential || !batched || !sequential->Sync(prefix.first(1), &error) ||
         !batched->Sync(prefix, &error)) {
-      std::cerr << "Qwen3.8-Flash-Next prefill validation failed: " << error
-                << '\n';
+      std::cerr << name << " prefill validation failed: " << error << '\n';
       return 1;
     }
     for (const std::int32_t token : prefix.subspan(1)) {
       if (!sequential->Evaluate(token, &error)) {
-        std::cerr << "Qwen3.8-Flash-Next sequential reference failed: " << error
-                  << '\n';
+        std::cerr << name << " sequential reference failed: " << error << '\n';
         return 1;
       }
     }
@@ -1100,11 +1159,12 @@ int RunQwen38FlashNextBenchmark(
         sampling::SamplerState sampler(options.sampling, history);
         const auto start = std::chrono::steady_clock::now();
         while (generated.size() < generation_length) {
-          qfn::Session::DecodeResult decoded;
+          typename Engine::Session::DecodeResult decoded;
           if (!session->DecodeStep(generation_length - generated.size(),
                                    sampler, &decoded, &error, false) ||
               decoded.tokens.empty()) {
-            std::cerr << "Error running Flash-Next decode: " << error << '\n';
+            std::cerr << "Error running " << short_name << " decode: " << error
+                      << '\n';
             return 1;
           }
           generated.insert(generated.end(), decoded.tokens.begin(),
@@ -1116,7 +1176,7 @@ int RunQwen38FlashNextBenchmark(
         runs.push_back(static_cast<double>(generation_length) / seconds);
         if (options.verbose) {
           const auto stats = session->Statistics();
-          std::cerr << "Qwen3.8-Flash-Next tg depth=" << depth
+          std::cerr << name << " tg depth=" << depth
                     << " cycles=" << stats.cycles
                     << " drafted=" << stats.drafted
                     << " accepted=" << stats.accepted << " output_sha256="
@@ -1265,7 +1325,12 @@ int RunBench(std::span<const char* const> args) {
     return RunDeepSeekBenchmark(opt, reader, model_load_start);
   }
   if (IsQwen38FlashNext(*reader)) {
-    return RunQwen38FlashNextBenchmark(opt, reader, model_load_start);
+    return RunQwenMoeBenchmark<FlashNextBenchEngine>(opt, reader,
+                                                     model_load_start);
+  }
+  if (IsQwen36(*reader)) {
+    return RunQwenMoeBenchmark<Qwen36BenchEngine>(opt, reader,
+                                                  model_load_start);
   }
 
   if (opt.concurrency != std::vector<std::size_t>{1}) {
@@ -1274,8 +1339,8 @@ int RunBench(std::span<const char* const> args) {
     return 1;
   }
   if (!opt.sampling.can_use_unmodified_argmax()) {
-    std::cerr << "Error: sampled model benchmarks support DS4 and Flash-Next; "
-                 "use the serving benchmark for Qwen\n";
+    std::cerr << "Error: sampled model benchmarks support DS4, Flash-Next "
+                 "and Qwen3.6; use the serving benchmark for Qwen\n";
     return 1;
   }
 

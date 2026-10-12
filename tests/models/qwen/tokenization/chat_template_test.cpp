@@ -439,6 +439,266 @@ void TestHuggingFaceRenderedGoldens() {
          "A wrapped tool response is not a user query");
 }
 
+// A qwen35moe GGUF must carry a pinned Qwen3.6 template; its family then
+// selects the Qwen3.6 profile. Any other template is rejected by hash.
+void TestQwen36GgufTemplateExtraction() {
+  using gufo::tokenization::QwenChatTemplate;
+  std::string reference = ReadText(GUFO_QWEN36_CHAT_TEMPLATE_REFERENCE);
+  Expect(!reference.empty(), "Pinned Qwen3.6 template reference is readable");
+  if (reference.ends_with('\n')) {
+    reference.pop_back();
+  }
+  Expect(Sha256(reference) == QwenChatTemplate::Qwen36OfficialTemplateSha256(),
+         "Qwen3.6 reference is the pinned official template");
+  const auto open = [](std::vector<std::uint8_t>& binary) {
+    std::string err;
+    auto reader =
+        gufo::core::GgufReader::OpenMemory(binary.data(), binary.size(), &err);
+    Expect(reader != nullptr, "Qwen3.6 template GGUF opens");
+    return reader;
+  };
+
+  GgufTemplateBuilder pinned;
+  pinned.AddMetadataString("general.architecture", "qwen35moe");
+  pinned.AddMetadataString("tokenizer.chat_template", reference);
+  auto pinned_binary = pinned.Build();
+  const auto pinned_reader = open(pinned_binary);
+  std::string err;
+  const auto tpl = QwenChatTemplate::CreateFromGguf(*pinned_reader, &err);
+  Expect(tpl != nullptr, "Pinned Qwen3.6 template is extracted: " + err);
+  Expect(tpl->GetProfile() == QwenChatTemplate::Profile::kQwen36,
+         "Pinned Qwen3.6 template selects the Qwen3.6 profile");
+  Expect(tpl->GetTemplateId() == "qwen36-compiled-v1",
+         "Qwen3.6 compiled template version is stable");
+  Expect(tpl->GetTemplateSha256() ==
+             QwenChatTemplate::Qwen36OfficialTemplateSha256(),
+         "Pinned Qwen3.6 template hash is recognized exactly");
+  Expect(QwenChatTemplate::ValidateGgufTemplate(*pinned_reader, &err),
+         "Pinned Qwen3.6 template validates");
+  Expect(QwenChatTemplate::CreateDefault(reference)->GetProfile() ==
+             QwenChatTemplate::Profile::kQwen36,
+         "Raw Qwen3.6 template text selects the Qwen3.6 profile");
+
+  std::string qwen38 = ReadText(GUFO_QWEN38_CHAT_TEMPLATE_REFERENCE);
+  if (qwen38.ends_with('\n')) {
+    qwen38.pop_back();
+  }
+  for (const std::string& unpinned : {qwen38, reference + " "}) {
+    GgufTemplateBuilder builder;
+    builder.AddMetadataString("general.architecture", "qwen35moe");
+    builder.AddMetadataString("tokenizer.chat_template", unpinned);
+    auto binary = builder.Build();
+    const auto reader = open(binary);
+    err.clear();
+    Expect(QwenChatTemplate::CreateFromGguf(*reader, &err) == nullptr &&
+               err.find("Qwen3.6 GGUF chat template SHA-256 is not a "
+                        "recognized pinned version") != std::string::npos,
+           "Unpinned Qwen3.6 template is rejected by hash");
+    Expect(!QwenChatTemplate::ValidateGgufTemplate(*reader, &err),
+           "Unpinned Qwen3.6 template fails validation");
+  }
+
+  GgufTemplateBuilder missing;
+  missing.AddMetadataString("general.architecture", "qwen35moe");
+  auto missing_binary = missing.Build();
+  const auto missing_reader = open(missing_binary);
+  err.clear();
+  Expect(QwenChatTemplate::CreateFromGguf(*missing_reader, &err) == nullptr &&
+             err.find("missing tokenizer.chat_template") != std::string::npos,
+         "Qwen3.6 GGUF without a template is rejected");
+}
+
+// The Qwen3.6 family resolves its own defaults and renders the official
+// template's bytes (revision 995ad96e); Qwen3.8 resolution is unchanged.
+void TestQwen36RenderedGoldens() {
+  using gufo::tokenization::ChatMessage;
+  using gufo::tokenization::ChatRole;
+  using gufo::tokenization::ChatTemplateOptions;
+  using gufo::tokenization::ChatTool;
+  using gufo::tokenization::QwenChatTemplate;
+  using gufo::tokenization::QwenReasoningEffort;
+  using gufo::tokenization::QwenTemplateFamily;
+  using gufo::tokenization::ResolveQwenChatOptions;
+
+  const auto q36 = [](gufo::ReasoningOptions reasoning) {
+    return ResolveQwenChatOptions(reasoning, false,
+                                  QwenTemplateFamily::kQwen36);
+  };
+  const auto defaults = q36({});
+  Expect(defaults.enable_thinking, "Qwen3.6 thinks by default");
+  Expect(!defaults.preserve_thinking,
+         "Qwen3.6 drops earlier reasoning by default");
+  Expect(defaults.reasoning_effort == QwenReasoningEffort::kMedium,
+         "Qwen3.6 adds no reasoning-effort instruction");
+  Expect(defaults.keep_empty_system && defaults.split_inline_reasoning,
+         "Qwen3.6 follows its template's system and inline reasoning rules");
+  Expect(!q36({.enabled = false}).enable_thinking,
+         "Qwen3.6 thinking can be disabled");
+  Expect(q36({.preserve_thinking = true}).preserve_thinking,
+         "Qwen3.6 earlier reasoning can be preserved");
+  const auto qwen38 =
+      ResolveQwenChatOptions({}, false, QwenTemplateFamily::kQwen38);
+  Expect(qwen38.enable_thinking && qwen38.preserve_thinking &&
+             qwen38.reasoning_effort == QwenReasoningEffort::kXHigh &&
+             !qwen38.keep_empty_system && !qwen38.split_inline_reasoning,
+         "Qwen3.8 defaults are unchanged");
+  Expect(ResolveQwenChatOptions({.effort = gufo::ReasoningEffort::kLow}, false,
+                                QwenTemplateFamily::kQwen38)
+                 .reasoning_effort == QwenReasoningEffort::kLow,
+         "Qwen3.8 keeps its reasoning-effort control");
+
+  std::ifstream input(GUFO_CHAT_TEMPLATE_HF_GOLDENS);
+  Expect(input.good(), "Template fixture opens");
+  const auto fixture = gufo::json::parse(std::string{
+      std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()});
+  const auto golden = [&](std::string_view name) {
+    return gufo::testing::chat_goldens::GoldenCase(fixture, "qwen36", name)
+        .member_str("rendered_sha256");
+  };
+  const auto render = [](const std::vector<ChatMessage>& messages,
+                         const ChatTemplateOptions& options,
+                         std::span<const ChatTool> tools = {}) {
+    const auto rendered = QwenChatTemplate::Render(messages, tools, options);
+    Expect(rendered.has_value(), "Qwen3.6 prompt renders");
+    return *rendered;
+  };
+
+  const std::vector<ChatMessage> base = {
+      {ChatRole::kUser, "Name one color.", "", ""},
+  };
+  const std::vector<ChatMessage> history = {
+      {ChatRole::kUser, "Name one color.", "", ""},
+      {ChatRole::kAssistant, "Red", "", "I should answer with one color."},
+      {ChatRole::kUser, "Name another.", "", ""},
+  };
+  const std::vector<ChatTool> tools = {
+      {.name = "get_weather",
+       .description = "Get weather",
+       .parameters_json =
+           R"({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]})"}};
+
+  Expect(Sha256(render(base, defaults)) == golden("thinking"),
+         "Qwen3.6 thinking prompt matches the official template");
+  const auto chat = render(base, q36({.enabled = false}));
+  Expect(Sha256(chat) == golden("chat") &&
+             chat.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
+         "Qwen3.6 thinking off closes an empty think block");
+  Expect(Sha256(render(history, defaults)) == golden("history_drop"),
+         "Qwen3.6 drops earlier reasoning by default");
+  Expect(Sha256(render(history,
+                       q36({.enabled = false, .preserve_thinking = true}))) ==
+             golden("history_preserve"),
+         "Qwen3.6 preserve_thinking keeps earlier reasoning");
+  Expect(
+      Sha256(render(base, q36({.enabled = false}), tools)) == golden("tools"),
+      "Qwen3.6 tools prompt matches the official template");
+  const std::vector<ChatMessage> system_tools{
+      {ChatRole::kSystem, "Be concise."}, base[0]};
+  Expect(
+      Sha256(render(system_tools, defaults, tools)) == golden("system_tools"),
+      "Qwen3.6 tools precede system content");
+
+  for (const auto effort :
+       {gufo::ReasoningEffort::kMinimal, gufo::ReasoningEffort::kLow,
+        gufo::ReasoningEffort::kMedium, gufo::ReasoningEffort::kHigh,
+        gufo::ReasoningEffort::kXHigh, gufo::ReasoningEffort::kMax}) {
+    const auto resolved = q36({.effort = effort});
+    const auto rendered = render(base, resolved);
+    Expect(resolved.reasoning_effort == QwenReasoningEffort::kMedium &&
+               Sha256(rendered) == golden("thinking") &&
+               rendered.find("Reasoning effort is set to") == std::string::npos,
+           "Qwen3.6 ignores reasoning effort");
+    Expect(Sha256(render(base, q36({.enabled = false, .effort = effort}))) ==
+               golden("chat"),
+           "Qwen3.6 effort leaves thinking-off prompts unchanged");
+  }
+
+  // A leading system message always opens a system turn, empty or not.
+  constexpr std::string_view kEmptySystem =
+      "<|im_start|>system\n<|im_end|>\n"
+      "<|im_start|>user\nName one color.<|im_end|>\n"
+      "<|im_start|>assistant\n<think>\n";
+  for (const char* content : {"", " \n "}) {
+    const std::vector<ChatMessage> messages{{ChatRole::kSystem, content},
+                                            base[0]};
+    Expect(render(messages, defaults) == kEmptySystem,
+           "Qwen3.6 keeps an empty system turn");
+    Expect(
+        Sha256(render(messages, defaults, tools)) ==
+            "93f5a741880e4a83acf0acfda328dde662fae1d6103ef227eb4912f1bfd769c4",
+        "Qwen3.6 tools omit empty system content");
+    ChatTemplateOptions qwen38_medium;
+    qwen38_medium.reasoning_effort = QwenReasoningEffort::kMedium;
+    Expect(render(messages, qwen38_medium) == render(base, qwen38_medium),
+           "Qwen3.8 still skips an empty system turn");
+  }
+
+  // Assistant content carrying inline reasoning reads as reasoning + reply.
+  std::vector<ChatMessage> inline_history = history;
+  inline_history[1] = {ChatRole::kAssistant,
+                       "<think>\nI should answer red.\n</think>\n\nRed"};
+  Expect(Sha256(render(inline_history, defaults)) == golden("history_drop"),
+         "Qwen3.6 drops inline earlier reasoning");
+  Expect(render(inline_history, q36({.preserve_thinking = true})) ==
+             "<|im_start|>user\nName one color.<|im_end|>\n"
+             "<|im_start|>assistant\n<think>\nI should answer red.\n</think>"
+             "\n\nRed<|im_end|>\n<|im_start|>user\nName another.<|im_end|>\n"
+             "<|im_start|>assistant\n<think>\n",
+         "Qwen3.6 preserves inline reasoning as reasoning");
+  ChatTemplateOptions qwen38_drop;
+  qwen38_drop.reasoning_effort = QwenReasoningEffort::kMedium;
+  qwen38_drop.preserve_thinking = false;
+  Expect(render(inline_history, qwen38_drop)
+                 .find("<|im_start|>assistant\n<think>\nI should answer red."
+                       "\n</think>\n\nRed<|im_end|>") != std::string::npos,
+         "Qwen3.8 renders inline reasoning as written");
+  const auto replay = [&](std::string content, std::string thought = {}) {
+    std::vector<ChatMessage> messages = history;
+    messages[1] = {ChatRole::kAssistant, std::move(content), "",
+                   std::move(thought)};
+    return render(messages, q36({.preserve_thinking = true}));
+  };
+  constexpr std::string_view kTurnStart =
+      "<|im_start|>user\nName one color.<|im_end|>\n<|im_start|>assistant\n";
+  constexpr std::string_view kTurnEnd =
+      "<|im_end|>\n<|im_start|>user\nName another.<|im_end|>\n"
+      "<|im_start|>assistant\n<think>\n";
+  Expect(replay("<think>no close Red") ==
+             std::string(kTurnStart) +
+                 "<think>\n\n</think>\n\n<think>no close Red" +
+                 std::string(kTurnEnd),
+         "Qwen3.6 keeps content without a closing think tag");
+  Expect(replay("a<think>\nx\n</think>b</think>\nRed") ==
+             std::string(kTurnStart) + "<think>\nx\n</think>\n\nRed" +
+                 std::string(kTurnEnd),
+         "Qwen3.6 splits at the first and last closing think tags");
+  Expect(replay("<think>x</think>Red", "real") ==
+             std::string(kTurnStart) +
+                 "<think>\nreal\n</think>\n\n<think>x</think>Red" +
+                 std::string(kTurnEnd),
+         "Qwen3.6 keeps inline tags when reasoning is given");
+
+  // Current tool-cycle replies keep inline reasoning; a reply that is only
+  // reasoning has no separator before its tool call.
+  for (const auto& [content, expected] : {
+           std::pair{"<think>Use the tool.</think>\n\n Checking.",
+                     "92446bfe0b37ec5ba546ed6673a7a5bb4fe4dc1039a9df82d06242316"
+                     "b0a35d1"},
+           std::pair{"<think>Use the tool.</think>",
+                     "a542433b62170611a025e068cbee34fedbbfef7c55174292c9dd9c21f"
+                     "54c971a"},
+       }) {
+    ChatMessage call{ChatRole::kAssistant, content};
+    call.tool_calls.push_back(
+        {.name = "get_weather",
+         .arguments = {{.name = "city", .value = "Rome"}}});
+    const std::vector<ChatMessage> messages{
+        base[0], call, {ChatRole::kTool, "21 C"}};
+    Expect(Sha256(render(messages, q36({.enabled = false}), tools)) == expected,
+           "Qwen3.6 tool-cycle inline reasoning matches the official template");
+  }
+}
+
 void TestRenderAndTokenize() {
   auto tpl = gufo::tokenization::QwenChatTemplate::CreateDefault();
 
@@ -1206,6 +1466,8 @@ int main() {
   TestRenderedPromptBoundFollowsContext();
   TestGgufTemplateExtraction();
   TestHuggingFaceRenderedGoldens();
+  TestQwen36GgufTemplateExtraction();
+  TestQwen36RenderedGoldens();
   TestRenderAndTokenize();
   TestContentSpellingATokenIsNotParsedAsOne();
   TestToolReplayArgumentsAreContent();

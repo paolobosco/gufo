@@ -2319,9 +2319,11 @@ void TestCompatibilityThinkingDefaults() {
 void TestResponseSamplingDefaults() {
   RunningServer server;
   using gufo::sampling::TextModelPreset;
-  for (const auto model :
-       {TextModelPreset::kQwen38, TextModelPreset::kDeepSeekV4Flash}) {
+  for (const auto model : {TextModelPreset::kQwen38, TextModelPreset::kQwen36,
+                           TextModelPreset::kDeepSeekV4Flash}) {
     server.backend->defaults.model = model;
+    const bool qwen =
+        model == TextModelPreset::kQwen38 || model == TextModelPreset::kQwen36;
     for (const bool server_thinking : {false, true}) {
       server.backend->reasoning.enabled = server_thinking;
       for (const char* effort :
@@ -2333,7 +2335,10 @@ void TestResponseSamplingDefaults() {
         const bool thinking = std::string_view(effort) == "null"
                                   ? server_thinking
                                   : std::string_view(effort) != "\"none\"";
-        const bool qwen_off = model == TextModelPreset::kQwen38 && !thinking;
+        const bool qwen_off = qwen && !thinking;
+        // Qwen3.6 applies presence 1.5 in both modes.
+        const float presence =
+            qwen_off || model == TextModelPreset::kQwen36 ? 1.5F : 0.0F;
         server.backend->defaults.supplied = {};
         ExpectStatus(server.Post("/v1/responses", body.dump()), 200);
         auto call = server.backend->LastCall();
@@ -2341,9 +2346,8 @@ void TestResponseSamplingDefaults() {
         assert(call.chat.response_format);
         assert(call.sampling.temperature == (qwen_off ? 0.7F : 1.0F));
         assert(call.sampling.top_p == (qwen_off ? 0.8F : 0.95F));
-        assert(call.sampling.presence_penalty == (qwen_off ? 1.5F : 0.0F));
-        assert(call.sampling.top_k ==
-               (model == TextModelPreset::kQwen38 ? 20 : 0));
+        assert(call.sampling.presence_penalty == presence);
+        assert(call.sampling.top_k == (qwen ? 20 : 0));
         // Explicit CLI values survive reasoning changes and SDK nulls.
         server.backend->defaults.sampling.temperature = 0.25F;
         server.backend->defaults.sampling.top_k = 0;

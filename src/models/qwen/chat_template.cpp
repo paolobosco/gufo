@@ -28,10 +28,19 @@ std::size_t RenderedPromptBoundBytes(std::uint32_t context_tokens) noexcept {
 }
 
 ChatTemplateOptions ResolveQwenChatOptions(const ReasoningOptions& reasoning,
-                                           bool add_vision_id) {
+                                           bool add_vision_id,
+                                           QwenTemplateFamily family) {
   ChatTemplateOptions options;
   options.add_vision_id = add_vision_id;
   options.enable_thinking = reasoning.enabled.value_or(options.enable_thinking);
+  if (family == QwenTemplateFamily::kQwen36) {
+    // The medium effort adds no instruction, as the Qwen3.6 template.
+    options.reasoning_effort = QwenReasoningEffort::kMedium;
+    options.preserve_thinking = reasoning.preserve_thinking.value_or(false);
+    options.keep_empty_system = true;
+    options.split_inline_reasoning = true;
+    return options;
+  }
   options.preserve_thinking =
       reasoning.preserve_thinking.value_or(options.preserve_thinking);
   switch (reasoning.effort.value_or(ReasoningEffort::kXHigh)) {
@@ -78,6 +87,17 @@ bool IsQwen38ReasoningTemplate(std::string_view value) {
          hash == QwenChatTemplate::UnslothArtifactTemplateSha256();
 }
 
+bool IsQwen36Template(std::string_view value) {
+  const std::string hash = TemplateSha256(value);
+  return hash == QwenChatTemplate::Qwen36OfficialTemplateSha256() ||
+         hash == QwenChatTemplate::Qwen36UnslothTemplateSha256();
+}
+
+bool IsQwen36Artifact(const core::GgufReader& reader) {
+  return reader.GetMetadataString("general.architecture") ==
+         std::optional<std::string_view>{"qwen35moe"};
+}
+
 bool IsQwen38Artifact(const core::GgufReader& reader) {
   const auto name = reader.GetMetadataString("general.name");
   if (name.has_value() && name->find("Qwen3.8") != std::string_view::npos) {
@@ -112,6 +132,30 @@ std::string_view Trim(std::string_view value) {
     last = previous;
   }
   return value.substr(first, last - first);
+}
+
+struct InlineReasoning {
+  std::string_view reasoning;
+  std::string_view content;
+};
+
+// The Qwen3.6 template's reading of an assistant reply that carries its
+// reasoning inline: the text before the first `</think>`, after the last
+// `<think>` in it, is reasoning; the text after the last `</think>` is the
+// reply. Content without `</think>` stays as written.
+std::optional<InlineReasoning> SplitInlineReasoning(std::string_view content) {
+  constexpr std::string_view kOpen = "<think>";
+  constexpr std::string_view kClose = "</think>";
+  const auto first = content.find(kClose);
+  if (first == std::string_view::npos)
+    return std::nullopt;
+  auto reasoning = content.substr(0, first);
+  if (const auto open = reasoning.rfind(kOpen); open != std::string_view::npos)
+    reasoning.remove_prefix(open + kOpen.size());
+  auto reply = content.substr(content.rfind(kClose) + kClose.size());
+  while (reply.starts_with('\n'))
+    reply.remove_prefix(1);
+  return InlineReasoning{Trim(reasoning), reply};
 }
 
 std::string PythonJsonSpacing(std::string_view value) {
@@ -331,9 +375,9 @@ std::unique_ptr<QwenChatTemplate> QwenChatTemplate::CreateFromGguf(
     const core::GgufReader& reader, std::string* error_msg) {
   auto template_str = reader.GetMetadataString("tokenizer.chat_template");
   if (!template_str.has_value() || template_str->empty()) {
-    if (IsQwen38Artifact(reader)) {
+    if (IsQwen38Artifact(reader) || IsQwen36Artifact(reader)) {
       if (error_msg != nullptr) {
-        *error_msg = "Qwen3.8 GGUF is missing tokenizer.chat_template metadata";
+        *error_msg = "Qwen GGUF is missing tokenizer.chat_template metadata";
       }
       return nullptr;
     }
@@ -344,9 +388,19 @@ std::unique_ptr<QwenChatTemplate> QwenChatTemplate::CreateFromGguf(
     }
     return CreateDefault();
   }
-  const Profile profile = IsQwen38ReasoningTemplate(*template_str)
-                              ? Profile::kQwen38Reasoning
-                              : Profile::kLegacyChatMl;
+  const Profile profile =
+      IsQwen38ReasoningTemplate(*template_str) ? Profile::kQwen38Reasoning
+      : IsQwen36Template(*template_str)        ? Profile::kQwen36
+                                               : Profile::kLegacyChatMl;
+  if (IsQwen36Artifact(reader) && profile != Profile::kQwen36) {
+    if (error_msg != nullptr) {
+      *error_msg =
+          "Qwen3.6 GGUF chat template SHA-256 is not a recognized pinned "
+          "version: " +
+          TemplateSha256(*template_str);
+    }
+    return nullptr;
+  }
   if (IsQwen38Artifact(reader) && profile != Profile::kQwen38Reasoning) {
     if (error_msg != nullptr) {
       *error_msg =
@@ -362,7 +416,7 @@ std::unique_ptr<QwenChatTemplate> QwenChatTemplate::CreateFromGguf(
 
 bool QwenChatTemplate::ValidateGgufTemplate(const core::GgufReader& reader,
                                             std::string* error_msg) {
-  if (!IsQwen38Artifact(reader)) {
+  if (!IsQwen38Artifact(reader) && !IsQwen36Artifact(reader)) {
     return true;
   }
   return CreateFromGguf(reader, error_msg) != nullptr;
@@ -378,6 +432,7 @@ std::unique_ptr<QwenChatTemplate> QwenChatTemplate::CreateDefault(
   return std::unique_ptr<QwenChatTemplate>(new QwenChatTemplate(
       std::string(raw_template), TemplateSha256(raw_template),
       IsQwen38ReasoningTemplate(raw_template) ? Profile::kQwen38Reasoning
+      : IsQwen36Template(raw_template)        ? Profile::kQwen36
                                               : Profile::kLegacyChatMl));
 }
 
@@ -387,6 +442,8 @@ std::string_view QwenChatTemplate::GetTemplateId() const noexcept {
       return "qwen-chatml-compiled-v1";
     case Profile::kQwen38Reasoning:
       return "qwen38-reasoning-compiled-v3";
+    case Profile::kQwen36:
+      return "qwen36-compiled-v1";
   }
   return "qwen-chatml-compiled-v1";
 }
@@ -499,6 +556,7 @@ std::optional<std::string> QwenChatTemplate::Render(
     }
     ++message_index;
   }
+  const bool has_system_message = message_index > 0;
 
   std::string system_prefix;
   std::vector<ContentSpan> system_spans;
@@ -511,7 +569,8 @@ std::optional<std::string> QwenChatTemplate::Render(
   system_prefix.append(system_content);
   for (const auto& span : system_content_spans)
     system_spans.push_back({system_content_offset + span.offset, span.size});
-  if (!system_prefix.empty()) {
+  if (!system_prefix.empty() ||
+      (options.keep_empty_system && has_system_message)) {
     output.append(kImStart).append("system\n");
     const auto prefix_offset = output.size();
     output.append(system_prefix);
@@ -593,7 +652,15 @@ std::optional<std::string> QwenChatTemplate::Render(
     output.append(role_name);
     output.push_back('\n');
 
-    const std::string_view thought = Trim(msg.thought);
+    std::string_view thought = Trim(msg.thought);
+    std::optional<std::string_view> reply;
+    if (msg.role == ChatRole::kAssistant && options.split_inline_reasoning &&
+        thought.empty()) {
+      if (const auto split = SplitInlineReasoning(Trim(msg.content))) {
+        thought = split->reasoning;
+        reply = split->content;
+      }
+    }
     if (msg.role == ChatRole::kAssistant &&
         (options.preserve_thinking || message_index > last_user_index)) {
       output.append("<think>\n");
@@ -601,8 +668,14 @@ std::optional<std::string> QwenChatTemplate::Render(
       output.append("\n</think>\n\n");
     }
 
-    const bool has_content = AppendMessageContent(
-        output, msg, options, image_count, image_offsets, content_spans);
+    bool has_content = false;
+    if (reply) {
+      AppendContent(output, content_spans, *reply);
+      has_content = !Trim(*reply).empty();
+    } else {
+      has_content = AppendMessageContent(output, msg, options, image_count,
+                                         image_offsets, content_spans);
+    }
     if (msg.role == ChatRole::kAssistant && !msg.tool_calls.empty()) {
       if (has_content) {
         output.append("\n\n");

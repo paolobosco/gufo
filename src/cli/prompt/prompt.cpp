@@ -31,6 +31,7 @@
 #include "src/models/qwen/hip/dflash.hpp"
 #include "src/models/qwen/hip/executor.hpp"
 #include "src/models/qwen/hip/mtp.hpp"
+#include "src/models/qwen36_35b_a3b/engine.hpp"
 #include "src/models/qwen38_flash_next/engine.hpp"
 #endif
 
@@ -158,7 +159,7 @@ static void RegisterTextOptions(ArgParser& parser, PromptOptions& opt,
                    "Path to the DeepSeek V4 Flash DSpark support GGUF file",
                    "Speculative", &opt.dspark_model_path);
   parser.AddOption("", "--mtp-model", "PATH",
-                   "Path to quantized Qwen MTP draft head GGUF file",
+                   "Qwen MTP draft head GGUF (Qwen3.6 uses its native MTP)",
                    "Speculative", &opt.mtp_model_path);
   parser.AddCustomOption(
       "-d", "--draft-tokens", "N",
@@ -231,6 +232,31 @@ void PrintChatHelp(std::string_view program_name) {
   PrintTextHelp(program_name, "chat");
 }
 
+tokenization::QwenTemplateFamily PromptTemplateFamily(
+    const core::GgufReader& reader) {
+  return reader.GetMetadataString("general.architecture") == "qwen35moe"
+             ? tokenization::QwenTemplateFamily::kQwen36
+             : tokenization::QwenTemplateFamily::kQwen38;
+}
+
+sampling::TextModelPreset PromptSamplingPreset(const core::GgufReader& reader) {
+  const auto artifact_architecture =
+      reader.GetMetadataString("general.architecture");
+  if (artifact_architecture == "deepseek4") {
+    return sampling::TextModelPreset::kDeepSeekV4Flash;
+  }
+  if (artifact_architecture == "qwen4exp") {
+    return sampling::TextModelPreset::kQwen38;
+  }
+  if (artifact_architecture == "qwen35moe") {
+    return sampling::TextModelPreset::kQwen36;
+  }
+  if (const auto config = reader.ExtractModelConfig()) {
+    return sampling::TextPreset(*config);
+  }
+  return sampling::TextModelPreset::kUnspecified;
+}
+
 namespace {
 
 void PrintModelLoadTime(std::chrono::steady_clock::time_point start,
@@ -291,20 +317,17 @@ ReasoningOptions PromptReasoningOptions(const PromptOptions& options) {
   return reasoning;
 }
 
+// Qwen3.6 drafts with the MTP block of its own artifact. Every other MTP
+// model needs a separate draft head, rejected before any weights load.
+bool MissingMtpModel(const PromptOptions& opt, const core::GgufReader& reader) {
+  return opt.speculative_backend == "mtp" && opt.mtp_model_path.empty() &&
+         reader.GetMetadataString("general.architecture") != "qwen35moe";
+}
+
 void ResolvePromptSampling(const core::GgufReader& reader, PromptOptions* opt) {
-  sampling::TextModelPreset preset = sampling::TextModelPreset::kUnspecified;
-  const auto artifact_architecture =
-      reader.GetMetadataString("general.architecture");
-  if (artifact_architecture == "deepseek4") {
-    preset = sampling::TextModelPreset::kDeepSeekV4Flash;
-  } else if (artifact_architecture == "qwen4exp") {
-    preset = sampling::TextModelPreset::kQwen38;
-  } else if (const auto config = reader.ExtractModelConfig()) {
-    preset = sampling::TextPreset(*config);
-  }
   opt->sampling = sampling::ResolveTextSampling(
-      preset, PromptReasoningOptions(*opt).enabled, opt->sampling,
-      opt->sampling_supplied);
+      PromptSamplingPreset(reader), PromptReasoningOptions(*opt).enabled,
+      opt->sampling, opt->sampling_supplied);
 }
 
 #if defined(ENGINE_ENABLE_HIP)
@@ -678,31 +701,68 @@ std::shared_ptr<models::qwen38_flash_next::Model> LoadFlashNextModel(
   return model;
 }
 
-int GenerateFlashNextResponse(const PromptOptions& opt,
-                              const models::qwen38_flash_next::Model& model,
-                              models::qwen38_flash_next::Session& session,
-                              std::span<const tokenization::TokenId> prompt,
-                              std::string* reply = nullptr) {
+std::shared_ptr<models::qwen36_35b_a3b::Model> LoadQwen36Model(
+    const PromptOptions& opt, const core::GgufReader& reader,
+    std::chrono::steady_clock::time_point load_start) {
+  std::string error;
+  if (opt.force_cpu ||
+      (!opt.speculative_backend.empty() && opt.speculative_backend != "mtp") ||
+      (opt.speculative_backend == "mtp" && opt.min_draft_tokens != 1)) {
+    std::cerr << "Qwen3.6 requires ROCm and supports native MTP with "
+                 "--min-draft-tokens 1\n";
+    return nullptr;
+  }
+  if (!opt.mtp_model_path.empty() || !opt.vision_model_path.empty() ||
+      !opt.image_paths.empty()) {
+    std::cerr << "Qwen3.6 is text-only and uses its native MTP block; "
+                 "remove --mtp-model, --mmproj and --image\n";
+    return nullptr;
+  }
+  if (opt.use_chat_template &&
+      !tokenization::QwenChatTemplate::ValidateGgufTemplate(reader, &error)) {
+    std::cerr << "Unsupported Qwen3.6 chat template: " << error << '\n';
+    return nullptr;
+  }
+  auto model = models::qwen36_35b_a3b::Model::Load(
+      opt.model_path,
+      {.max_context = kDefaultContext,
+       .mtp = opt.speculative_backend == "mtp",
+       .max_draft_tokens = opt.draft_tokens,
+       .vision_model_path = {},
+       .decode_concurrency = 1},
+      &error);
+  PrintModelLoadTime(load_start, model != nullptr);
+  if (!model)
+    std::cerr << "Qwen3.6 load failed: " << error << '\n';
+  return model;
+}
+
+// Flash-Next and Qwen3.6 sessions share the Sync/DecodeStep contract.
+template<class Model, class Session>
+int GenerateQwenMoeResponse(const PromptOptions& opt, std::string_view name,
+                            const Model& model, Session& session,
+                            std::span<const tokenization::TokenId> prompt,
+                            std::string* reply = nullptr) {
   if (prompt.empty() || prompt.size() >= session.ContextSize() ||
       opt.max_tokens > session.ContextSize() - prompt.size()) {
-    std::cerr
-        << "Flash-Next prompt and output exceed the 4096-token CLI context\n";
+    std::cerr << name
+              << " prompt and output exceed the 4096-token CLI context\n";
     return 1;
   }
   const std::vector<std::int32_t> input(prompt.begin(), prompt.end());
   std::string error;
   if (!session.Sync(input, &error)) {
-    std::cerr << "Flash-Next prefill failed: " << error << '\n';
+    std::cerr << name << " prefill failed: " << error << '\n';
     return 1;
   }
   sampling::SamplerState sampler(opt.sampling, prompt);
   std::vector<tokenization::TokenId> generated;
   const auto start = std::chrono::steady_clock::now();
   while (generated.size() < opt.max_tokens) {
-    models::qwen38_flash_next::Session::DecodeResult decoded;
+    typename Session::DecodeResult decoded;
     if (!session.DecodeStep(opt.max_tokens - generated.size(), sampler,
                             &decoded, &error)) {
-      std::cerr << "Flash-Next decode failed: " << error << '\n';
+      std::cerr << name << " decode failed: " << error << '\n';
       return 1;
     }
     for (const auto token : decoded.tokens) {
@@ -875,11 +935,8 @@ static std::optional<PromptOptions> ParseTextOptions(
       *error_msg = "DFlash2 requires --dflash-model";
     return std::nullopt;
   }
-  if (backend == "mtp" && opt.mtp_model_path.empty()) {
-    if (error_msg != nullptr)
-      *error_msg = "MTP requires --mtp-model";
-    return std::nullopt;
-  }
+  // A missing MTP draft head is rejected once the artifact is known: Qwen3.6
+  // carries its MTP block in the target GGUF.
 
   if (opt.draft_tokens == 0 || opt.min_draft_tokens == 0 ||
       opt.min_draft_tokens > opt.draft_tokens) {
@@ -970,6 +1027,13 @@ int RunPrompt(std::span<const char* const> args) {
     }
   }
 
+  // Without an artifact there is no native MTP block to draft from.
+  if (opt.model_path.empty() && opt.speculative_backend == "mtp" &&
+      opt.mtp_model_path.empty()) {
+    std::cerr << "Error: MTP requires --mtp-model\n";
+    return 2;
+  }
+
   if (opt.prompt_text.empty() && opt.model_path.empty()) {
     PrintPromptHelp("gufo");
     return 0;
@@ -993,6 +1057,10 @@ int RunPrompt(std::span<const char* const> args) {
   }
   const std::shared_ptr<const gufo::core::GgufReader> reader(
       std::move(reader_owner));
+  if (MissingMtpModel(opt, *reader)) {
+    std::cerr << "Error: MTP requires --mtp-model\n";
+    return 2;
+  }
   ResolvePromptSampling(*reader, &opt);
 
 #if defined(ENGINE_ENABLE_HIP)
@@ -1024,7 +1092,8 @@ int RunPrompt(std::span<const char* const> args) {
     const auto reasoning = PromptReasoningOptions(opt);
     const auto rendered = tokenization::QwenChatTemplate::Render(
         messages, {},
-        tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id),
+        tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id,
+                                             PromptTemplateFamily(*reader)),
         nullptr, nullptr, nullptr, &content_spans);
     if (rendered.has_value()) {
       rendered_prompt = *rendered;
@@ -1060,11 +1129,35 @@ int RunPrompt(std::span<const char* const> args) {
         auto vision = PrepareVision(opt, model->tokenizer(), messages,
                                     model->VisionEncoder());
         session->ConfigureVision(vision);
-        return GenerateFlashNextResponse(opt, *model, *session, vision->tokens);
+        return GenerateQwenMoeResponse(opt, "Flash-Next", *model, *session,
+                                       vision->tokens);
       }
       const auto ids = encode_prompt(model->tokenizer());
       const std::vector<tokenization::TokenId> prompt(ids.begin(), ids.end());
-      return GenerateFlashNextResponse(opt, *model, *session, prompt);
+      return GenerateQwenMoeResponse(opt, "Flash-Next", *model, *session,
+                                     prompt);
+    } catch (const std::exception& e) {
+      std::cerr << e.what() << '\n';
+      return 1;
+    }
+  }
+  if (reader->GetMetadataString("general.architecture") == "qwen35moe") {
+    auto model = LoadQwen36Model(opt, *reader, model_load_start);
+    if (!model)
+      return 1;
+    auto session =
+        model->CreateSession(opt.speculative_backend.empty()
+                                 ? gufo::core::SessionMode::kAutoregressive
+                                 : gufo::core::SessionMode::kSpeculative,
+                             kDefaultContext, &err);
+    if (!session) {
+      std::cerr << "Qwen3.6 session failed: " << err << '\n';
+      return 1;
+    }
+    try {
+      const auto ids = encode_prompt(model->tokenizer());
+      const std::vector<tokenization::TokenId> prompt(ids.begin(), ids.end());
+      return GenerateQwenMoeResponse(opt, "Qwen3.6", *model, *session, prompt);
     } catch (const std::exception& e) {
       std::cerr << e.what() << '\n';
       return 1;
@@ -1199,6 +1292,12 @@ int RunChat(std::span<const char* const> args) {
   }
 
   auto opt = *opt_res;
+  // Without an artifact there is no native MTP block to draft from.
+  if (opt.model_path.empty() && opt.speculative_backend == "mtp" &&
+      opt.mtp_model_path.empty()) {
+    std::cerr << "Error: MTP requires --mtp-model\n";
+    return 2;
+  }
   if (opt.model_path.empty()) {
     std::cout << "gufo chat: interactive conversation mode\n"
               << "(Specify --model <PATH.gguf> to load model weights)\n";
@@ -1216,6 +1315,10 @@ int RunChat(std::span<const char* const> args) {
   }
   const std::shared_ptr<const gufo::core::GgufReader> reader(
       std::move(reader_owner));
+  if (MissingMtpModel(opt, *reader)) {
+    std::cerr << "Error: MTP requires --mtp-model\n";
+    return 2;
+  }
   ResolvePromptSampling(*reader, &opt);
 
 #if defined(ENGINE_ENABLE_HIP)
@@ -1242,6 +1345,8 @@ int RunChat(std::span<const char* const> args) {
   std::unique_ptr<speculative::SpeculativeVerifier> verifier;
   std::shared_ptr<models::qwen38_flash_next::Model> flash_model;
   std::unique_ptr<models::qwen38_flash_next::Session> flash_session;
+  std::shared_ptr<models::qwen36_35b_a3b::Model> qwen36_model;
+  std::unique_ptr<models::qwen36_35b_a3b::Session> qwen36_session;
   if (reader->GetMetadataString("general.architecture") == "qwen4exp") {
     flash_model = LoadFlashNextModel(opt, *reader, model_load_start);
     if (!flash_model)
@@ -1258,6 +1363,21 @@ int RunChat(std::span<const char* const> args) {
     tokenizer = &flash_model->tokenizer();
     architecture = "qwen4exp";
     vision_encoder = flash_model->VisionEncoder();
+  } else if (reader->GetMetadataString("general.architecture") == "qwen35moe") {
+    qwen36_model = LoadQwen36Model(opt, *reader, model_load_start);
+    if (!qwen36_model)
+      return 1;
+    qwen36_session = qwen36_model->CreateSession(
+        opt.speculative_backend.empty()
+            ? gufo::core::SessionMode::kAutoregressive
+            : gufo::core::SessionMode::kSpeculative,
+        kDefaultContext, &err);
+    if (!qwen36_session) {
+      std::cerr << "Qwen3.6 session failed: " << err << '\n';
+      return 1;
+    }
+    tokenizer = &qwen36_model->tokenizer();
+    architecture = "qwen35moe";
   }
   int device_count = 0;
   if (tokenizer == nullptr && !opt.force_cpu &&
@@ -1334,7 +1454,8 @@ int RunChat(std::span<const char* const> args) {
     std::vector<tokenization::ContentSpan> content_spans;
     const auto rendered_prompt = tokenization::QwenChatTemplate::Render(
         history, {},
-        tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id),
+        tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id,
+                                             PromptTemplateFamily(*reader)),
         nullptr, nullptr, nullptr, &content_spans);
     if (!rendered_prompt.has_value()) {
       std::cerr << "Error formatting chat template.\n";
@@ -1362,8 +1483,14 @@ int RunChat(std::span<const char* const> args) {
           gpu_executor->ConfigureVision(vision, vision_encoder);
       }
       if (flash_model) {
-        if (GenerateFlashNextResponse(opt, *flash_model, *flash_session,
-                                      prompt_tokens, &assistant_reply) != 0)
+        if (GenerateQwenMoeResponse(opt, "Flash-Next", *flash_model,
+                                    *flash_session, prompt_tokens,
+                                    &assistant_reply) != 0)
+          return 1;
+      } else if (qwen36_model) {
+        if (GenerateQwenMoeResponse(opt, "Qwen3.6", *qwen36_model,
+                                    *qwen36_session, prompt_tokens,
+                                    &assistant_reply) != 0)
           return 1;
       } else if (gpu_executor != nullptr) {
         GenerateQwenGpuResponse(opt, *gpu_executor, verifier.get(),
@@ -1390,7 +1517,8 @@ int RunChat(std::span<const char* const> args) {
 
     std::cout << '\n';
     tokenization::ChatMessage reply{tokenization::ChatRole::kAssistant, ""};
-    if (tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id)
+    if (tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id,
+                                             PromptTemplateFamily(*reader))
             .enable_thinking) {
       constexpr std::string_view end = "</think>";
       const auto boundary = assistant_reply.find(end);

@@ -30,7 +30,8 @@ Non-Nix builds must retain the notices of the versions they actually distribute.
 | GNU C/C++/OpenMP runtimes | System runtime libraries; no Gufo source import | `LGPL-2.1-or-later AND (GPL-3.0-or-later WITH GCC-exception-3.1)` | glibc/GCC packages in flake.lock | [GNU](https://www.gnu.org/software/) |
 | llama.cpp / ggml | Adapted quantization, attention and model-private HIP kernels | `MIT` | `5c0e9468378eba6bf3cc1989ff5d62fbbe4d9e3a`; attention `e9fa0781f1c25fc4fe8c86be1edc6970661ad6f0` | [llama.cpp](https://github.com/ggml-org/llama.cpp) |
 | mikealanni/gufo | Adapted Flash-Next GDN row reuse and SSM stride optimization | `MIT` | `f450218743bcaf77e3e1f8fab78f4cd4e4aafae3` | [gufo fork](https://github.com/mikealanni/gufo/tree/f450218743bcaf77e3e1f8fab78f4cd4e4aafae3) |
-| Qwen chat templates | Reference Jinja and adapted renderer behavior | `Apache-2.0` | `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` (27B), `de4b8e4d43b917e7706784d8bb445c9af86a3540` (Flash-Next) | [Qwen](https://huggingface.co/Qwen/Qwen3.8-27B) |
+| NinjaPear/gufo-Qwen3.6-35B-A3B-Q6dense | Adapted Qwen3.6-35B-A3B model package, HIP kernels, serving integration and tests | `MIT` | `efcd90dd8a265857a5034ae818c052adba82ea26` | [gufo fork](https://github.com/NinjaPear/gufo-Qwen3.6-35B-A3B-Q6dense/tree/efcd90dd8a265857a5034ae818c052adba82ea26) |
+| Qwen chat templates | Reference Jinja and adapted renderer behavior | `Apache-2.0` | `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` (27B), `de4b8e4d43b917e7706784d8bb445c9af86a3540` (Flash-Next), `995ad96eacd98c81ed38be0c5b274b04031597b0` (Qwen3.6-35B-A3B) | [Qwen](https://huggingface.co/Qwen/Qwen3.8-27B) |
 | DS4 | Adapted loader, tokenizer, sessions and HIP kernels | `MIT` | `84cc882352757baf628a1776badf7cc54d584e28` | [antirez/ds4](https://github.com/antirez/ds4) |
 | DS4 GB10/GX10 fork | Adapted paired MoE launch code, now HIP | `MIT` | `910501e` | [xangel82/DS4](https://github.com/xangel82/DS4-GB10-GX10-DSpark-CUDA) |
 | h3.c | Adapted H3 geometry, scheduling and sampler; implementation reference | `MIT` | `8974cc055ea9c02fcd14cc27dfda3e1027c05153` | [antirez/h3.c](https://github.com/antirez/h3.c) |
@@ -50,7 +51,8 @@ and [H3 quality record](docs/models/minimax-h3/QUALITY.md).
 This software is based in part on the work of the Independent JPEG Group.
 
 The mikealanni/gufo fork retains the same Copyright (c) 2026 gufo contributors
-notice and MIT text as Gufo's root `LICENSE`.
+notice and MIT text as Gufo's root `LICENSE`. The
+NinjaPear/gufo-Qwen3.6-35B-A3B-Q6dense fork retains the same notice and text.
 
 FFmpeg is invoked as a separate process, not linked into Gufo. The pinned Nix
 build enables GPL/version3 components; a system FFmpeg build can have different

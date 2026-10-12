@@ -76,7 +76,7 @@ Text serving defaults match llama.cpp for context and generation length:
 | `--context` | `0`: native context from model metadata, per session |
 | `--max-tokens` | `-1`: until EOS or remaining context is exhausted |
 | `--sessions` | `1` |
-| Thinking / reasoning effort | Enabled; Qwen `xhigh`, DeepSeek `high` |
+| Thinking / reasoning effort | Enabled; Qwen3.8 `xhigh`, Qwen3.6 no effort control, DeepSeek `high` |
 
 Qwen chat prompts are bounded by the session context, not a fixed size: the
 rendered template may use up to 128 bytes per context token (at least 1 MiB).
@@ -100,6 +100,8 @@ setting independently, including when changing thinking mode.
 | DeepSeek V4 Flash 0731 (agentic) | 1.0 | 0.95 | 0 | 0 |
 | Qwen3.8 27B / Flash-Next, thinking | 1.0 | 0.95 | 20 | 0 |
 | Qwen3.8 27B / Flash-Next, thinking off | 0.7 | 0.8 | 20 | 1.5 |
+| Qwen3.6 35B-A3B, thinking | 1.0 | 0.95 | 20 | 1.5 |
+| Qwen3.6 35B-A3B, thinking off | 0.7 | 0.8 | 20 | 1.5 |
 
 Min-p and frequency penalty default to zero; repetition penalty is 1.0.
 AR and DFlash2/MTP/DSpark use the same target defaults.
@@ -110,11 +112,12 @@ Use `--think off` or request `"reasoning_effort": "none"` to disable thinking.
 DeepSeek maps `minimal`/`low` to `low`, `medium`/`high`/`xhigh` to `high`,
 and `max` to `max`.
 The [functional suite](../tests/functional/README.md) with
-`--suite sampling-defaults --sampling-preset qwen38` (or
+`--suite sampling-defaults --sampling-preset qwen38` (or `qwen36`,
 `deepseek4`) compares omitted and explicit settings, including C2 replay.
 
 Sources: [Qwen27B](https://huggingface.co/Qwen/Qwen3.8-27B#best-practices),
 [Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#best-practices),
+[Qwen3.6](https://huggingface.co/Qwen/Qwen3.6-35B-A3B#best-practices),
 [DeepSeek 0731](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/blob/7872f01b1d1fe23eabc4c98b48bffcef5a386062/README.md),
 [DeepSeek thinking defaults](https://api-docs.deepseek.com/guides/thinking_mode).
 DeepSeek's 0.95 top-p is its agentic recommendation; neutral penalties and
@@ -171,6 +174,12 @@ configured ceiling. Sampled MTP proposals use p/q acceptance and residual
 correction; greedy verification follows target argmax. Draft and verification
 work can batch across ready requests. See the
 [Flash-Next benchmark and quality contract](models/qwen3.8-flash-next/BENCHMARKS.md).
+
+Qwen3.6-35B-A3B uses the same scheduler and per-session state. Its MTP block
+is part of the target GGUF, so `--speculative mtp` needs no `--mtp-model`.
+Greedy drafts after the first are verified only while the draft probability
+is at least 0.5. See the
+[Qwen3.6 benchmark and quality contract](models/qwen3.6-35b-a3b/BENCHMARKS.md).
 
 Each model chooses its prefill chunk. `--prefill-chunk` limits prompt work
 between active decode rounds without changing a lone request's kernel policy.
@@ -295,14 +304,16 @@ it logs a `queue_budget_exceeded` warning and starts anyway.
 
 `--think auto` uses the model's default. Qwen27B and Flash-Next match the
 official Jinja: thinking enabled, `xhigh` effort, prior reasoning preserved.
+Qwen3.6 matches its official template: thinking enabled, no effort
+instruction, earlier reasoning dropped unless `preserve_thinking` is set.
 Use `--think off` or `chat_template_kwargs.enable_thinking=false` for direct
 answers. DeepSeek defaults to thinking with `high` effort. Quality comparisons
 must use the same reasoning mode and effort.
 
 Keep `reasoning_effort` (Chat) or `output_config.effort` (Messages) consistent
-across turns while thinking is enabled: Qwen and DeepSeek render the effort
+across turns while thinking is enabled: Qwen3.8 and DeepSeek render the effort
 instruction into the prompt, so changing it changes the prompt prefix and can
-force a full conversation prefill.
+force a full conversation prefill. Qwen3.6 renders no effort instruction.
 
 `POST /v1/chat/completions` accepts top-level `reasoning_effort` (`none`,
 `minimal`, `low`, `medium`, `high`, `xhigh`, or `max`) and Pi/llama.cpp-style

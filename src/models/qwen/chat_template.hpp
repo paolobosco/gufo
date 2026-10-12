@@ -96,6 +96,15 @@ enum class QwenReasoningEffort : std::uint8_t {
   kXHigh,
 };
 
+/// The official template family a request is rendered against.
+enum class QwenTemplateFamily : std::uint8_t {
+  /// Qwen3.8: reasoning-effort instructions, earlier reasoning kept.
+  kQwen38,
+  /// Qwen3.6: no reasoning-effort instruction, earlier reasoning dropped
+  /// unless preserve_thinking is set.
+  kQwen36,
+};
+
 /// Formatting options for rendering a conversation into a text prompt.
 struct ChatTemplateOptions {
   bool add_generation_prompt{true};
@@ -104,6 +113,12 @@ struct ChatTemplateOptions {
   bool preserve_thinking{true};
   bool add_vision_id{false};
   bool require_tool_call{false};
+  /// Emit a leading system turn even when its trimmed content is empty
+  /// (Qwen3.6 template).
+  bool keep_empty_system{false};
+  /// Read inline `<think>...</think>` in assistant content as its reasoning
+  /// when the message carries none (Qwen3.6 template).
+  bool split_inline_reasoning{false};
   std::size_t max_output_bytes{1024ULL * 1024ULL};  ///< 1 MiB upper bound
 };
 
@@ -127,10 +142,12 @@ inline constexpr std::size_t kMaxRenderedBytesPerToken = 128;
 /// Suffix opened for a new assistant turn, outside the stable conversation.
 [[nodiscard]] std::string_view GenerationPrompt(bool enable_thinking);
 
-/// Resolve CLI/API controls against the official Qwen3.8 template defaults.
-/// Provider-neutral minimal/high/max map to native low/xhigh/xhigh.
+/// Resolve CLI/API controls against the official template defaults of
+/// `family`. For Qwen3.8, provider-neutral minimal/high/max map to native
+/// low/xhigh/xhigh; Qwen3.6 has no reasoning-effort control.
 [[nodiscard]] ChatTemplateOptions ResolveQwenChatOptions(
-    const ReasoningOptions& reasoning, bool add_vision_id = false);
+    const ReasoningOptions& reasoning, bool add_vision_id = false,
+    QwenTemplateFamily family = QwenTemplateFamily::kQwen38);
 
 /// Deterministic, bounded Qwen ChatML formatter.
 class QwenChatTemplate {
@@ -138,6 +155,7 @@ public:
   enum class Profile : std::uint8_t {
     kLegacyChatMl,
     kQwen38Reasoning,
+    kQwen36,
   };
 
   ~QwenChatTemplate() = default;
@@ -152,8 +170,9 @@ public:
   [[nodiscard]] static std::unique_ptr<QwenChatTemplate> CreateFromGguf(
       const core::GgufReader& reader, std::string* error_msg = nullptr);
 
-  /// Validates that a Qwen3.8 artifact carries a recognized, pinned chat
-  /// template. Other Qwen model revisions retain their legacy formatter.
+  /// Validates that a Qwen3.8 or Qwen3.6 artifact carries a recognized,
+  /// pinned chat template. Other Qwen model revisions retain their legacy
+  /// formatter.
   [[nodiscard]] static bool ValidateGgufTemplate(
       const core::GgufReader& reader, std::string* error_msg = nullptr);
 
@@ -178,6 +197,20 @@ public:
   [[nodiscard]] static constexpr std::string_view
   UnslothArtifactTemplateSha256() noexcept {
     return "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce";
+  }
+
+  /// Qwen/Qwen3.6-35B-A3B chat_template.jinja (revision 995ad96e).
+  [[nodiscard]] static constexpr std::string_view
+  Qwen36OfficialTemplateSha256() noexcept {
+    return "e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259";
+  }
+
+  /// The template embedded in Unsloth's Qwen3.6-35B-A3B GGUFs (developer
+  /// role and tool-calling fixes; renders the same as the official one for
+  /// the supported message roles).
+  [[nodiscard]] static constexpr std::string_view
+  Qwen36UnslothTemplateSha256() noexcept {
+    return "55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c";
   }
 
   /// Formats a list of messages into a deterministic UTF-8 prompt string.

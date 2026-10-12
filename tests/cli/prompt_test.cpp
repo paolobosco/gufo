@@ -1,10 +1,23 @@
 #include "src/cli/prompt/prompt.hpp"
 
+#include <unistd.h>
+
 #include <array>
 #include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <tuple>
+#include <vector>
+
+#include "src/core/gguf_reader.hpp"
+#include "src/core/model_config.hpp"
 
 void TestDefaultOptions() {
   const std::array<const char*, 2> args = {"Hello", "world"};
@@ -123,17 +136,131 @@ void TestInvalidFlags() {
   const std::array<const char*, 2> args9 = {"--reasoning-budget", "1024"};
   assert(!gufo::cli::ParsePromptOptions(args9, &err).has_value());
 
-  for (const auto* backend : {"dflash2", "mtp"}) {
-    const std::array<const char*, 2> missing_path = {"--speculative", backend};
-    assert(!gufo::cli::ParsePromptOptions(missing_path, &err).has_value());
-    assert(err.find("requires --") != std::string::npos);
-  }
+  const std::array<const char*, 2> missing_path = {"--speculative", "dflash2"};
+  assert(!gufo::cli::ParsePromptOptions(missing_path, &err).has_value());
+  assert(err.find("requires --") != std::string::npos);
+  // A model's MTP block may live in the target GGUF (Qwen3.6), so a missing
+  // sidecar is reported once the artifact is read; see TestMissingMtpModel.
+  const std::array<const char*, 2> native_mtp = {"--speculative", "mtp"};
+  assert(gufo::cli::ParsePromptOptions(native_mtp, &err).has_value());
   const std::array<const char*, 5> cpu_spec = {
       "--cpu", "--speculative", "dflash2", "--dflash-model", "draft.gguf"};
   assert(!gufo::cli::ParsePromptOptions(cpu_spec, &err).has_value());
   assert(err.find("ROCm") != std::string::npos);
   const std::array<const char*, 3> cpu_ar = {"--cpu", "--speculative", "off"};
   assert(gufo::cli::ParsePromptOptions(cpu_ar, &err).has_value());
+}
+
+// Metadata-only GGUF naming an architecture: enough for the CLI to choose a
+// model path, with no weights to load.
+std::filesystem::path WriteArchitectureGguf(std::string_view architecture) {
+  std::vector<std::uint8_t> bytes;
+  const auto pod = [&]<class T>(T value) {
+    const auto begin = bytes.size();
+    bytes.resize(begin + sizeof(value));
+    std::memcpy(bytes.data() + begin, &value, sizeof(value));
+  };
+  const auto text = [&](std::string_view value) {
+    pod(std::uint64_t{value.size()});
+    bytes.insert(bytes.end(), value.begin(), value.end());
+  };
+  pod(std::uint32_t{0x46554747});
+  pod(std::uint32_t{3});
+  pod(std::uint64_t{0});
+  pod(std::uint64_t{1});
+  text("general.architecture");
+  pod(std::uint32_t{8});
+  text(architecture);
+  bytes.resize((bytes.size() + 31) / 32 * 32);
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("gufo_prompt_test_" + std::to_string(getpid()) + "_" +
+                     std::string(architecture) + ".gguf");
+  std::ofstream(path, std::ios::binary)
+      .write(reinterpret_cast<const char*>(bytes.data()),
+             static_cast<std::streamsize>(bytes.size()));
+  return path;
+}
+
+// Only Qwen3.6 carries its MTP block in the target GGUF. Every other model
+// rejects --speculative mtp without --mtp-model as a usage error, before
+// loading weights.
+void TestMissingMtpModel() {
+  // Without an artifact no native MTP block exists, as before the check
+  // moved after the model header.
+  const std::array<const char*, 3> no_model_prompt = {"--speculative", "mtp",
+                                                      "Hi"};
+  assert(gufo::cli::RunPrompt(no_model_prompt) == 2);
+  const std::array<const char*, 2> no_model_chat = {"--speculative", "mtp"};
+  assert(gufo::cli::RunChat(no_model_chat) == 2);
+  for (const char* architecture : {"qwen35", "qwen4exp", "deepseek4"}) {
+    const auto path = WriteArchitectureGguf(architecture);
+    const std::string model = path.string();
+    const std::array<const char*, 5> prompt = {"--model", model.c_str(),
+                                               "--speculative", "mtp", "Hi"};
+    assert(gufo::cli::RunPrompt(prompt) == 2);
+    const std::array<const char*, 4> chat = {"--model", model.c_str(),
+                                             "--speculative", "mtp"};
+    assert(gufo::cli::RunChat(chat) == 2);
+    std::filesystem::remove(path);
+  }
+  // Qwen3.6 passes the check; this metadata-only file then fails to load
+  // (no ROCm on CPU builds, no chat template on HIP builds).
+  const auto path = WriteArchitectureGguf("qwen35moe");
+  const std::string model = path.string();
+  const std::array<const char*, 5> prompt = {"--model", model.c_str(),
+                                             "--speculative", "mtp", "Hi"};
+  assert(gufo::cli::RunPrompt(prompt) == 1);
+  const std::array<const char*, 4> chat = {"--model", model.c_str(),
+                                           "--speculative", "mtp"};
+  assert(gufo::cli::RunChat(chat) == 1);
+  std::filesystem::remove(path);
+}
+
+// Qwen3.6 artifacts select their own template family and sampling preset;
+// the other architectures keep theirs.
+void TestQwen36Defaults() {
+  using gufo::sampling::ResolveTextSampling;
+  using gufo::sampling::TextModelPreset;
+  using gufo::tokenization::QwenTemplateFamily;
+  for (const auto& [architecture, family, preset] : {
+           std::tuple{"qwen35moe", QwenTemplateFamily::kQwen36,
+                      TextModelPreset::kQwen36},
+           std::tuple{"qwen4exp", QwenTemplateFamily::kQwen38,
+                      TextModelPreset::kQwen38},
+           std::tuple{"deepseek4", QwenTemplateFamily::kQwen38,
+                      TextModelPreset::kDeepSeekV4Flash},
+       }) {
+    const auto path = WriteArchitectureGguf(architecture);
+    std::string error;
+    const auto reader = gufo::core::GgufReader::OpenFile(path, &error);
+    assert(reader != nullptr);
+    assert(gufo::cli::PromptTemplateFamily(*reader) == family);
+    assert(gufo::cli::PromptSamplingPreset(*reader) == preset);
+    std::filesystem::remove(path);
+  }
+  gufo::core::ModelConfig config;
+  config.architecture = "qwen35moe";
+  assert(gufo::sampling::TextPreset(config) == TextModelPreset::kQwen36);
+
+  for (const auto thinking :
+       {std::optional<bool>{}, std::optional<bool>{true}}) {
+    const auto on =
+        ResolveTextSampling(TextModelPreset::kQwen36, thinking, {}, {});
+    assert(on.temperature == 1.0F && on.top_p == 0.95F && on.top_k == 20 &&
+           on.presence_penalty == 1.5F);
+  }
+  const auto off = ResolveTextSampling(TextModelPreset::kQwen36, false, {}, {});
+  assert(off.temperature == 0.7F && off.top_p == 0.8F && off.top_k == 20 &&
+         off.presence_penalty == 1.5F);
+  const char* zero[] = {"--presence-penalty=0", "Hello"};
+  const auto parsed = gufo::cli::ParsePromptOptions(zero);
+  assert(parsed && parsed->sampling_supplied.presence_penalty);
+  for (const bool thinking : {false, true}) {
+    const auto resolved =
+        ResolveTextSampling(TextModelPreset::kQwen36, thinking,
+                            parsed->sampling, parsed->sampling_supplied);
+    assert(resolved.presence_penalty == 0 && resolved.top_k == 20);
+  }
 }
 
 void TestSamplingAndReasoningFlags() {
@@ -208,6 +335,8 @@ int main() {
   TestFlashMtpFlags();
   TestImageFlags();
   TestInvalidFlags();
+  TestMissingMtpModel();
+  TestQwen36Defaults();
   std::cout << "All prompt CLI tests passed.\n";
   return 0;
 }

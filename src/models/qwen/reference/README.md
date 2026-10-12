@@ -1,4 +1,6 @@
-# Qwen3.8 chat-template reference
+# Qwen chat-template references
+
+## Qwen3.8
 
 The compiled formatter is pinned to `Qwen/Qwen3.8-27B` revision
 `1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0`.
@@ -34,3 +36,22 @@ including Unicode case-insensitive contractions, letter/mark runs and
 trailing-whitespace backtracking. Ten raw-text
 goldens check exact token IDs for spacing, code, accents, scripts with combining
 marks, Unicode number categories and special-token boundaries on both models.
+
+## Qwen3.6
+
+`qwen36_chat_template.jinja` is the official `Qwen/Qwen3.6-35B-A3B`
+`chat_template.jinja` at revision `995ad96eacd98c81ed38be0c5b274b04031597b0`.
+It defaults to `enable_thinking=true` and `preserve_thinking=false` and has no
+reasoning-effort control. A leading system message renders a system turn even
+when its content is empty. Assistant content holding inline
+`<think>...</think>` without `reasoning_content` is split into reasoning and
+reply.
+
+- Official `chat_template.jinja` SHA-256:
+  `e84f32a23fdda27689f868aa4a1a5621f41133e51a48d7f3efcbea2839574259`
+- Repository copy with its terminating LF SHA-256:
+  `c726bb991c3150f3ee3d690930f43ed1e7c28dcef27cfbc6de3400db1da2a9a6`
+- Official `tokenizer.json` SHA-256:
+  `5f9e4d4901a92b997e463c1f46055088b6cca5ca61a6522d1b9f64c4bb81cb42`
+- Recognized Unsloth Qwen3.6 GGUF template SHA-256:
+  `55d4931433fe502b794226ee7f4d206a6bdd436ac9f80eb7d8ebb4c639f9ea0c`

@@ -67,12 +67,13 @@ The supported modalities are LLM, image, video, and audio (TTS, ASR).
 
 - `think` (`"on"` / `"off"` / `"auto"`) — whether the model produces its
   visible thinking before answering. In practice: off for quick chats, on
-  for hard problems. Auto uses the model default: enabled for Qwen3.8 and
-  DeepSeek V4 Flash.
+  for hard problems. Auto uses the model default: enabled for Qwen3.8,
+  Qwen3.6 and DeepSeek V4 Flash.
 - `reasoningEffort` (`"auto"`, `"minimal"`, `"low"`, `"medium"`, `"high"`,
   `"xhigh"`, `"max"`) — model instructions controlling reasoning depth,
-  not a token limit. Auto selects Qwen `xhigh` or DeepSeek `high`; more effort
-  can increase response time and generated tokens.
+  not a token limit. Auto selects Qwen3.8 `xhigh` or DeepSeek `high`; more
+  effort can increase response time and generated tokens. Qwen3.6 has no
+  effort instruction, so this setting does not change its prompt.
 - `preserveThinking` (`"on"` / `"off"` / `"auto"`) — whether earlier turns'
   thinking is kept in the conversation history. In practice: keeping it can
   help follow-up questions that build on the previous reasoning, at the cost
@@ -96,7 +97,8 @@ seed. Speed depends on acceptance and verification cost.
 
 - `speculative` — `dflash2` for Qwen3.8-27B, `dspark` for DeepSeek V4 Flash,
   `mtp` for models with a supported MTP head, or `off`. HTTP serving
-  supports `dflash2`, `dspark`, and Flash-Next `mtp`.
+  supports `dflash2`, `dspark`, and Flash-Next/Qwen3.6 `mtp`. Qwen3.6
+  reads its MTP block from the target GGUF and rejects `mtpModel`.
 - `dflashModel` — path to the DFlash2 companion draft.
 - `dsparkModel` — path to the DSpark support GGUF.
 - `mtpModel` — path to the MTP draft model.
@@ -105,7 +107,7 @@ seed. Speed depends on acceptance and verification cost.
 - `draftPolicy` (`"fixed"` / `"adaptive"`) — DFlash2 block-length policy;
   defaults to adaptive.
 - `minDraftTokens` — minimum draft length where supported. DFlash2, DSpark,
-  and Flash-Next MTP require the default of one.
+  and Flash-Next/Qwen3.6 MTP require the default of one.
 
 **Server limits (protecting the machine from clients)**
 

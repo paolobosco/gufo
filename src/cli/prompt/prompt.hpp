@@ -9,8 +9,10 @@
 #include <string_view>
 #include <vector>
 
+#include "src/core/gguf_reader.hpp"
 #include "src/core/sampling.hpp"
 #include "src/core/text_sampling_defaults.hpp"
+#include "src/models/qwen/chat_template.hpp"
 
 namespace gufo::cli {
 
@@ -53,6 +55,15 @@ void PrintChatHelp(std::string_view program_name);
 /// Parses command line options for `gufo prompt`.
 [[nodiscard]] std::optional<PromptOptions> ParsePromptOptions(
     std::span<const char* const> args, std::string* error_msg = nullptr);
+
+/// Qwen chat-template family of a text artifact: Qwen3.6 for `qwen35moe`,
+/// Qwen3.8 otherwise.
+[[nodiscard]] tokenization::QwenTemplateFamily PromptTemplateFamily(
+    const core::GgufReader& reader);
+
+/// Sampling preset of a text artifact, from its architecture.
+[[nodiscard]] sampling::TextModelPreset PromptSamplingPreset(
+    const core::GgufReader& reader);
 
 /// Executes the prompt CLI workflow.
 [[nodiscard]] int RunPrompt(std::span<const char* const> args);
