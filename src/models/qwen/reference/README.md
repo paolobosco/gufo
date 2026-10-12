@@ -42,7 +42,8 @@ marks, Unicode number categories and special-token boundaries on both models.
 `qwen36_chat_template.jinja` is the official `Qwen/Qwen3.6-35B-A3B`
 `chat_template.jinja` at revision `995ad96eacd98c81ed38be0c5b274b04031597b0`.
 It defaults to `enable_thinking=true` and `preserve_thinking=false` and has no
-reasoning-effort control. A leading system message renders a system turn even
+reasoning-effort control. Gufo resolves an unset `preserve_thinking` to true
+for Qwen3.6; an explicit false renders the template default. A leading system message renders a system turn even
 when its content is empty. Assistant content holding inline
 `<think>...</think>` without `reasoning_content` is split into reasoning and
 reply.

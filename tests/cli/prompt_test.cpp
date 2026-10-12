@@ -222,6 +222,7 @@ void TestQwen36Defaults() {
   using gufo::sampling::ResolveTextSampling;
   using gufo::sampling::TextModelPreset;
   using gufo::tokenization::QwenTemplateFamily;
+  using gufo::tokenization::ResolveQwenChatOptions;
   for (const auto& [architecture, family, preset] : {
            std::tuple{"qwen35moe", QwenTemplateFamily::kQwen36,
                       TextModelPreset::kQwen36},
@@ -236,6 +237,10 @@ void TestQwen36Defaults() {
     assert(reader != nullptr);
     assert(gufo::cli::PromptTemplateFamily(*reader) == family);
     assert(gufo::cli::PromptSamplingPreset(*reader) == preset);
+    // Every family keeps earlier reasoning unless the request turns it off.
+    assert(ResolveQwenChatOptions({}, false, family).preserve_thinking);
+    assert(!ResolveQwenChatOptions({.preserve_thinking = false}, false, family)
+                .preserve_thinking);
     std::filesystem::remove(path);
   }
   gufo::core::ModelConfig config;

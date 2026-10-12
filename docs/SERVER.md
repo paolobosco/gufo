@@ -304,8 +304,10 @@ it logs a `queue_budget_exceeded` warning and starts anyway.
 
 `--think auto` uses the model's default. Qwen27B and Flash-Next match the
 official Jinja: thinking enabled, `xhigh` effort, prior reasoning preserved.
-Qwen3.6 matches its official template: thinking enabled, no effort
-instruction, earlier reasoning dropped unless `preserve_thinking` is set.
+Qwen3.6 matches its official template with `preserve_thinking` set: thinking
+enabled, no effort instruction, prior reasoning preserved; `--preserve-thinking
+off` gives the template's own default, which drops reasoning before the last
+user message.
 Use `--think off` or `chat_template_kwargs.enable_thinking=false` for direct
 answers. DeepSeek defaults to thinking with `high` effort. Quality comparisons
 must use the same reasoning mode and effort.

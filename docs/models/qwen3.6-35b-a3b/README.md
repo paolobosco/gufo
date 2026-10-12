@@ -64,8 +64,13 @@ length adapts to acceptance and is capped by `--draft-tokens` (1 to 7, default
 7); drafts after the first are verified only while the draft probability is
 at least 0.5. Greedy MTP output must equal AR token for token.
 
-The official template defaults to thinking on and drops earlier reasoning
-unless `preserve_thinking` is set; it has no reasoning-effort control. Sampling
+The official template defaults to thinking on and has no reasoning-effort
+control. It drops reasoning from turns before the last user message unless
+`preserve_thinking` is set. Gufo sets it by default, as the model card
+recommends for agents and as Flash-Next does, so each new user turn extends
+the cached previous generation. `--preserve-thinking off` or
+`chat_template_kwargs.preserve_thinking=false` restores the template default;
+reasoning inside the current tool cycle is kept either way. Sampling
 defaults follow the model card (thinking: temperature 1.0, top-p 0.95; off:
 0.7, 0.8; top-k 20 and presence penalty 1.5 in both). Native context is 262144;
 YaRN extension is unsupported.

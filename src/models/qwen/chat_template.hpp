@@ -100,8 +100,8 @@ enum class QwenReasoningEffort : std::uint8_t {
 enum class QwenTemplateFamily : std::uint8_t {
   /// Qwen3.8: reasoning-effort instructions, earlier reasoning kept.
   kQwen38,
-  /// Qwen3.6: no reasoning-effort instruction, earlier reasoning dropped
-  /// unless preserve_thinking is set.
+  /// Qwen3.6: no reasoning-effort instruction; earlier reasoning kept unless
+  /// preserve_thinking is false (the official template's default).
   kQwen36,
 };
 
@@ -144,7 +144,8 @@ inline constexpr std::size_t kMaxRenderedBytesPerToken = 128;
 
 /// Resolve CLI/API controls against the official template defaults of
 /// `family`. For Qwen3.8, provider-neutral minimal/high/max map to native
-/// low/xhigh/xhigh; Qwen3.6 has no reasoning-effort control.
+/// low/xhigh/xhigh; Qwen3.6 has no reasoning-effort control and keeps
+/// earlier reasoning unless preserve_thinking is false.
 [[nodiscard]] ChatTemplateOptions ResolveQwenChatOptions(
     const ReasoningOptions& reasoning, bool add_vision_id = false,
     QwenTemplateFamily family = QwenTemplateFamily::kQwen38);

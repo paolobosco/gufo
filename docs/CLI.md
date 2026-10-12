@@ -77,7 +77,7 @@ The supported modalities are LLM, image, video, and audio (TTS, ASR).
 - `preserveThinking` (`"on"` / `"off"` / `"auto"`) — whether earlier turns'
   thinking is kept in the conversation history. In practice: keeping it can
   help follow-up questions that build on the previous reasoning, at the cost
-  of eating context.
+  of eating context. Auto keeps it for every Qwen model, Qwen3.6 included.
 
 **Disk cache**
 

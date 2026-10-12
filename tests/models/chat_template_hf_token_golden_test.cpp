@@ -129,7 +129,9 @@ void TestQwenGoldens(const json::Value& fixture,
 }
 
 // Qwen3.6 renders through the same compiled formatter with its own defaults:
-// no reasoning-effort instruction, earlier reasoning dropped by default.
+// no reasoning-effort instruction, earlier reasoning kept unless
+// preserve_thinking is false (the official template's default, used for the
+// history_drop golden).
 void TestQwen36Goldens(const json::Value& fixture,
                        const std::string& model_path) {
   std::string error;
@@ -173,7 +175,7 @@ void TestQwen36Goldens(const json::Value& fixture,
   };
   check("thinking", base, {}, options({}, {}));
   check("chat", base, {}, options(false, {}));
-  check("history_drop", history, {}, options({}, {}));
+  check("history_drop", history, {}, options({}, false));
   check("history_preserve", history, {}, options(false, true));
   check("tools", base, tools, options(false, {}));
   const std::vector<qwen::ChatMessage> system_tools{

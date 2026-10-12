@@ -36,7 +36,11 @@ ChatTemplateOptions ResolveQwenChatOptions(const ReasoningOptions& reasoning,
   if (family == QwenTemplateFamily::kQwen36) {
     // The medium effort adds no instruction, as the Qwen3.6 template.
     options.reasoning_effort = QwenReasoningEffort::kMedium;
-    options.preserve_thinking = reasoning.preserve_thinking.value_or(false);
+    // Earlier reasoning stays in the prompt by default, as for Qwen3.8, so a
+    // new user turn extends the previous generation instead of rewriting it.
+    // The model card recommends this for agents; an explicit false renders
+    // the official template's default.
+    options.preserve_thinking = reasoning.preserve_thinking.value_or(true);
     options.keep_empty_system = true;
     options.split_inline_reasoning = true;
     return options;

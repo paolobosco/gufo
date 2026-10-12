@@ -509,7 +509,9 @@ void TestQwen36GgufTemplateExtraction() {
 }
 
 // The Qwen3.6 family resolves its own defaults and renders the official
-// template's bytes (revision 995ad96e); Qwen3.8 resolution is unchanged.
+// template's bytes (revision 995ad96e) for the same template variables;
+// only the preserve_thinking default (true) differs. Qwen3.8 resolution is
+// unchanged.
 void TestQwen36RenderedGoldens() {
   using gufo::tokenization::ChatMessage;
   using gufo::tokenization::ChatRole;
@@ -526,8 +528,10 @@ void TestQwen36RenderedGoldens() {
   };
   const auto defaults = q36({});
   Expect(defaults.enable_thinking, "Qwen3.6 thinks by default");
-  Expect(!defaults.preserve_thinking,
-         "Qwen3.6 drops earlier reasoning by default");
+  Expect(defaults.preserve_thinking,
+         "Qwen3.6 keeps earlier reasoning by default");
+  Expect(!q36({.preserve_thinking = false}).preserve_thinking,
+         "Qwen3.6 preserve_thinking false selects the official default");
   Expect(defaults.reasoning_effort == QwenReasoningEffort::kMedium,
          "Qwen3.6 adds no reasoning-effort instruction");
   Expect(defaults.keep_empty_system && defaults.split_inline_reasoning,
@@ -583,12 +587,16 @@ void TestQwen36RenderedGoldens() {
   Expect(Sha256(chat) == golden("chat") &&
              chat.ends_with("<|im_start|>assistant\n<think>\n\n</think>\n\n"),
          "Qwen3.6 thinking off closes an empty think block");
-  Expect(Sha256(render(history, defaults)) == golden("history_drop"),
-         "Qwen3.6 drops earlier reasoning by default");
+  Expect(Sha256(render(history, q36({.preserve_thinking = false}))) ==
+             golden("history_drop"),
+         "Qwen3.6 preserve_thinking false drops earlier reasoning");
   Expect(Sha256(render(history,
                        q36({.enabled = false, .preserve_thinking = true}))) ==
              golden("history_preserve"),
          "Qwen3.6 preserve_thinking keeps earlier reasoning");
+  Expect(Sha256(render(history, q36({.enabled = false}))) ==
+             golden("history_preserve"),
+         "Qwen3.6 keeps earlier reasoning by default");
   Expect(
       Sha256(render(base, q36({.enabled = false}), tools)) == golden("tools"),
       "Qwen3.6 tools prompt matches the official template");
@@ -637,7 +645,8 @@ void TestQwen36RenderedGoldens() {
   std::vector<ChatMessage> inline_history = history;
   inline_history[1] = {ChatRole::kAssistant,
                        "<think>\nI should answer red.\n</think>\n\nRed"};
-  Expect(Sha256(render(inline_history, defaults)) == golden("history_drop"),
+  Expect(Sha256(render(inline_history, q36({.preserve_thinking = false}))) ==
+             golden("history_drop"),
          "Qwen3.6 drops inline earlier reasoning");
   Expect(render(inline_history, q36({.preserve_thinking = true})) ==
              "<|im_start|>user\nName one color.<|im_end|>\n"
