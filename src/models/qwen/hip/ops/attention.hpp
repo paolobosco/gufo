@@ -123,7 +123,8 @@ void LaunchBatchedFusedQKNormRoPEKvWrite(
     std::uint32_t key_begin = 0, bool skip_kv_write = false);
 
 /// Masked prefill attention on the WMMA matrix cores.
-/// Same contract as LaunchBatchedAttentionTile: it
+/// Same contract as LaunchBatchedAttentionTile, over 16 or 24 query heads
+/// (four KV heads, head_dim 256): it
 /// packs the FP16 K/V cache unless `skip_kv_write`, masks keys in
 /// [`key_begin`, min(context_end, query position]), and emits the partial
 /// log-sum-exp into `lse_out` (suppressing the gate) when that is non-null.

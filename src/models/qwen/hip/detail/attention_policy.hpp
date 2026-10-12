@@ -84,6 +84,20 @@ struct AttentionSupportParams {
          params.has_k_cache_f16 && params.has_v_cache_f16;
 }
 
+/// WMMA prefill attention shares the tiled KV geometry and FP16 cache, and is
+/// instantiated for 24 query heads (Qwen3.8-27B) and 16 (Qwen3.5-9B).
+[[nodiscard]] constexpr bool IsWmmaAttentionSupported(
+    const AttentionSupportParams& params) noexcept {
+  return params.batch_size != 0 &&
+         (params.num_heads == kTiledAttentionQueryHeads ||
+          params.num_heads == 16) &&
+         params.num_kv_heads == kTiledAttentionKvHeads &&
+         params.head_dim == kTiledAttentionHeadDim &&
+         static_cast<std::size_t>(params.start_pos) + params.batch_size <=
+             params.max_context &&
+         params.has_k_cache_f16 && params.has_v_cache_f16;
+}
+
 /// The row-split recurrence needs two scratch planes and a 128 x 128 state
 /// tile.
 [[nodiscard]] constexpr bool ShouldUseSsmRowSplitRecurrence(
