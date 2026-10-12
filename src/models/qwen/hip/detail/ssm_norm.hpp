@@ -12,12 +12,15 @@ namespace gufo::hip::detail {
 // independent of the compiler's contraction choices, which since LLVM 23 can
 // differ between kernels and between unrolled copies in one kernel. The result
 // is canonical in lane 0: lanes 16-31 round the first step the other way, so
-// callers read or broadcast lane 0.
+// callers read or broadcast lane 0. It is opaque to the optimizer: the SLP
+// vectorizer of ROCm 10.0's LLVM otherwise folds the last butterfly step of
+// one sum into the caller's cross-sum reduction and reorders the additions.
 __device__ __forceinline__ float WarpSquareSum(float x) {
   float sum = __builtin_fmaf(x, x, __shfl_xor(x * x, 16));
   for (int offset = 8; offset > 0; offset >>= 1) {
     sum += __shfl_xor(sum, offset);
   }
+  asm volatile("" : "+v"(sum));
   return sum;
 }
 

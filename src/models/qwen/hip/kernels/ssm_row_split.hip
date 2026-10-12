@@ -337,10 +337,15 @@ __global__ void BatchedSSMPostNormGateFp16Kernel(const float* raw,
     values[j] = raw[base + lane + j * 32];
     squares[j] = detail::WarpSquareSum(values[j]);
   }
-  const float sum =
-      __shfl(__fadd_rn(__fadd_rn(__fadd_rn(squares[0], squares[1]), squares[2]),
-                       squares[3]),
-             0);
+  // The FP32 epilogue's cross-warp order; each partial sum stays opaque so no
+  // vectorized reduction can reorder it.
+  float total = squares[0];
+#pragma unroll
+  for (unsigned j = 1; j < 4; ++j) {
+    total = __fadd_rn(total, squares[j]);
+    asm volatile("" : "+v"(total));
+  }
+  const float sum = __shfl(total, 0);
   const float inv =
       rsqrtf(__fadd_rn(__fmul_rn(sum, 1.0F / kRowSplitDim), 1e-6F));
 #pragma unroll
