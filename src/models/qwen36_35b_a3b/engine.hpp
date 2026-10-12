@@ -40,6 +40,8 @@ struct ModelOptions {
   bool mtp = false;
   /// Maximum proposals per cycle; acceptance history selects the length.
   std::uint32_t max_draft_tokens = kMaxMtpDraftTokens;
+  /// Explicit vision sidecar. Empty loads no encoder, even when an mmproj
+  /// file sits next to the artifact.
   std::string vision_model_path;
   /// Fixed serving capacity used by the calibrated MTP cost model. Keeping
   /// it independent of scheduler timing preserves seeded request replay.
@@ -81,6 +83,9 @@ public:
   }
   [[nodiscard]] std::string ModelName() const;
   [[nodiscard]] const Config& config() const noexcept;
+  /// Formats of the loaded tensors per role (TypeHistogram), MTP block
+  /// included when it was loaded.
+  [[nodiscard]] std::string WeightFormats() const;
   [[nodiscard]] const tokenization::QwenTokenizer& tokenizer() const noexcept {
     return *tokenizer_;
   }

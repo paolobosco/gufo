@@ -108,12 +108,16 @@ std::shared_ptr<Model> Model::Load(const std::string& model_path,
                                std::to_string(c.context_length) + " tokens");
     return nullptr;
   }
-  try {
-    m->vision_ = qwen::vision::Encoder::Open(
-        model_path, options.vision_model_path, c.hidden_size);
-  } catch (const std::exception& e) {
-    AssignError(error_msg, e.what());
-    return nullptr;
+  // Text-only by default: an mmproj file next to the artifact is not a
+  // sidecar for this model, so only an explicit path opens one.
+  if (!options.vision_model_path.empty()) {
+    try {
+      m->vision_ = qwen::vision::Encoder::Open(
+          model_path, options.vision_model_path, c.hidden_size);
+    } catch (const std::exception& e) {
+      AssignError(error_msg, e.what());
+      return nullptr;
+    }
   }
   m->tokenizer_ =
       tokenization::QwenTokenizer::CreateFromGguf(*m->reader_, error_msg);
@@ -206,6 +210,10 @@ std::string Model::ModelName() const {
 
 const Config& Model::config() const noexcept {
   return weights_->config;
+}
+
+std::string Model::WeightFormats() const {
+  return TypeHistogram(*weights_, mtp_weights_.get());
 }
 
 std::size_t Model::ResidentBytes() const noexcept {

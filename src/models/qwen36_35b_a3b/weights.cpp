@@ -1,6 +1,9 @@
 #include "src/models/qwen36_35b_a3b/weights.hpp"
 
+#include <array>
 #include <initializer_list>
+#include <map>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -182,6 +185,35 @@ struct Binder {
   }
 };
 
+/// Every tensor slot of a block; unbound slots stay empty.
+std::array<const TensorRef*, 29> BlockTensors(const LayerWeights& l) {
+  return {&l.attn_norm,      &l.post_norm,        &l.ssm_qkv,
+          &l.ssm_gate,       &l.ssm_conv1d,       &l.ssm_alpha,
+          &l.ssm_beta,       &l.ssm_dt,           &l.ssm_a,
+          &l.ssm_norm,       &l.ssm_out,          &l.attn_q,
+          &l.attn_k,         &l.attn_v,           &l.attn_out,
+          &l.attn_q_norm,    &l.attn_k_norm,      &l.router,
+          &l.ffn_gate_exps,  &l.ffn_up_exps,      &l.ffn_down_exps,
+          &l.shexp_gate_inp, &l.shexp_gate,       &l.shexp_up,
+          &l.shexp_down,     &l.nextn_enorm,      &l.nextn_hnorm,
+          &l.nextn_eh_proj,  &l.nextn_shared_norm};
+}
+
+std::string_view RoleOf(std::string_view name) {
+  constexpr std::string_view kBlock = "blk.";
+  constexpr std::string_view kWeight = ".weight";
+  if (name.starts_with(kBlock)) {
+    const auto dot = name.find('.', kBlock.size());
+    if (dot != std::string_view::npos) {
+      name.remove_prefix(dot + 1);
+    }
+  }
+  if (name.ends_with(kWeight)) {
+    name.remove_suffix(kWeight.size());
+  }
+  return name;
+}
+
 }  // namespace
 
 std::size_t TensorRef::RowBytes() const noexcept {
@@ -249,6 +281,53 @@ std::optional<MtpWeights> MtpWeights::Bind(const core::GgufReader& reader,
     return std::nullopt;
   }
   return m;
+}
+
+std::string TypeHistogram(const ModelWeights& weights, const MtpWeights* mtp) {
+  using Counts = std::map<std::string_view, std::size_t>;
+  std::set<std::string_view> seen;
+  std::map<std::string_view, Counts> roles;
+  Counts total;
+  std::size_t tensors = 0;
+  const auto add = [&](const TensorRef& t) {
+    if (t.empty() || !seen.insert(t.name).second) {
+      return;
+    }
+    const std::string_view type = core::ToString(t.type);
+    ++roles[RoleOf(t.name)][type];
+    ++total[type];
+    ++tensors;
+  };
+  add(weights.token_embd);
+  add(weights.output);
+  add(weights.output_norm);
+  for (const auto& layer : weights.layers) {
+    for (const TensorRef* t : BlockTensors(layer)) {
+      add(*t);
+    }
+  }
+  if (mtp != nullptr) {
+    for (const TensorRef* t : BlockTensors(mtp->block)) {
+      add(*t);
+    }
+  }
+  std::string text;
+  const auto line = [&](std::string_view label, const Counts& counts) {
+    text.append(label).append(":");
+    std::string_view separator = " ";
+    for (const auto& [type, count] : counts) {
+      text.append(separator).append(type).append(" x");
+      text.append(std::to_string(count));
+      separator = ", ";
+    }
+  };
+  for (const auto& [role, counts] : roles) {
+    line(role, counts);
+    text.append("\n");
+  }
+  line("total", total);
+  text.append(" (").append(std::to_string(tensors)).append(" tensors)\n");
+  return text;
 }
 
 }  // namespace gufo::models::qwen36_35b_a3b

@@ -13,6 +13,7 @@
 #include "src/core/quant/ggml_dequant.hpp"
 #include "src/models/qwen36_35b_a3b/kernels/rocm/kernels.hpp"
 #include "src/models/qwen36_35b_a3b/kernels/rocm/mmq/q36_mmq.h"
+#include "src/models/qwen36_35b_a3b/upload_policy.hpp"
 
 namespace gufo::models::qwen36_35b_a3b::rocm {
 namespace {
@@ -179,21 +180,28 @@ struct Uploader {
           PrefillQ8(HalfRows(t), static_cast<std::size_t>(d.rows) * d.cols);
       max_q8_cols = std::max<std::size_t>(max_q8_cols, d.cols);
     }
-    // Routed Q6_K experts (a few down projections) have no routed WMMA
-    // decoder; their Q8_0 copy keeps those layers on the WMMA route.
-    if (t.type == core::GgmlType::kQ6_K && d.experts > 1) {
-      const std::size_t count =
-          static_cast<std::size_t>(d.rows) * d.experts * d.cols;
-      std::vector<_Float16> host(count);
-      DequantHalf(t, host.data());
-      d.prefill = PrefillQ8(UploadHalf(host.data(), count, t.name), count);
-    }
     if (t.type == core::GgmlType::kBF16 || t.type == core::GgmlType::kF16) {
       max_half_cols = std::max<std::size_t>(max_half_cols, t.cols);
     }
     if (t.type == core::GgmlType::kQ8_0 && t.experts == 1) {
       max_q8_cols = std::max<std::size_t>(max_q8_cols, t.cols);
     }
+    return d;
+  }
+
+  /// A routed expert stack. Its Q8_0 prefill copy exists only where the
+  /// prefill layers read it (NeedsPrefillQ8Copy): a Q6_K down projection has
+  /// no routed WMMA decoder, and its copy keeps the layer on that route.
+  DeviceTensor Experts(const TensorRef& t, ExpertRole role, bool mtp) {
+    DeviceTensor d = Copy(t);
+    if (d.empty() || !ok || !NeedsPrefillQ8Copy(role, t.type, mtp)) {
+      return d;
+    }
+    const std::size_t count =
+        static_cast<std::size_t>(d.rows) * d.experts * d.cols;
+    std::vector<_Float16> host(count);
+    DequantHalf(t, host.data());
+    d.prefill = PrefillQ8(UploadHalf(host.data(), count, t.name), count);
     return d;
   }
 
@@ -342,7 +350,7 @@ struct Uploader {
     return d;
   }
 
-  DeviceLayer Layer(const LayerWeights& l) {
+  DeviceLayer Layer(const LayerWeights& l, bool mtp) {
     DeviceLayer d;
     d.linear = l.linear;
     d.attn_norm = Copy(l.attn_norm);
@@ -384,9 +392,9 @@ struct Uploader {
     d.attn_q_norm = Copy(l.attn_q_norm);
     d.attn_k_norm = Copy(l.attn_k_norm);
     d.router = Stack({&l.router, &l.shexp_gate_inp});
-    d.ffn_gate_exps = Copy(l.ffn_gate_exps);
-    d.ffn_up_exps = Copy(l.ffn_up_exps);
-    d.ffn_down_exps = Copy(l.ffn_down_exps);
+    d.ffn_gate_exps = Experts(l.ffn_gate_exps, ExpertRole::kGate, mtp);
+    d.ffn_up_exps = Experts(l.ffn_up_exps, ExpertRole::kUp, mtp);
+    d.ffn_down_exps = Experts(l.ffn_down_exps, ExpertRole::kDown, mtp);
     d.shexp_gate = Copy(l.shexp_gate);
     d.shexp_up = Copy(l.shexp_up);
     d.shexp_down = Copy(l.shexp_down);
@@ -435,13 +443,13 @@ std::unique_ptr<DeviceModel> DeviceModel::Upload(const ModelWeights& w,
   m->output_norm_ = up.Copy(w.output_norm);
   m->layers_.reserve(w.layers.size());
   for (const auto& l : w.layers) {
-    m->layers_.push_back(up.Layer(l));
+    m->layers_.push_back(up.Layer(l, false));
     if (!up.ok) {
       return nullptr;
     }
   }
   if (mtp != nullptr) {
-    m->mtp_ = up.Layer(mtp->block);
+    m->mtp_ = up.Layer(mtp->block, true);
     m->has_mtp_ = true;
   }
   if (!up.ok || !stager->Finish(error_msg)) {

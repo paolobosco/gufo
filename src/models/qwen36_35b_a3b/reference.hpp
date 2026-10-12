@@ -31,8 +31,13 @@ public:
                           std::span<float> hidden_out = {},
                           std::string* error_msg = nullptr);
 
-  /// Independent scalar predictor. An empty hidden input uses the previous
-  /// predictor residual; otherwise the supplied pre-norm trunk residual.
+  /// Independent scalar predictor. `hidden` goes to `nextn.hnorm` as given:
+  /// the supplied trunk residual (Step's `hidden_out`, before `output_norm`)
+  /// or, when empty, the previous predictor residual (before
+  /// `shared_head_norm`). The GPU executor and llama.cpp normalize that
+  /// hidden first, with `output_norm` on the first draft step and
+  /// `shared_head_norm` on chained steps, so their drafts differ from this
+  /// oracle's.
   [[nodiscard]] bool MtpStep(const MtpWeights& mtp, std::int32_t token,
                              std::span<const float> hidden,
                              std::span<float> logits,

@@ -109,6 +109,15 @@ struct MtpWeights {
       std::string* error_msg = nullptr);
 };
 
+/// GGML formats of the bound tensors per role, as text: one
+/// `role: TYPE xN[, TYPE xN]` line per role in name order, then
+/// `total: ... (N tensors)`. A role is the GGUF tensor name without its
+/// `blk.N.` prefix and `.weight` suffix. Each tensor counts once, so a trunk
+/// without `output.weight` reports `token_embd` alone; `mtp`, when given,
+/// adds the draft block.
+[[nodiscard]] std::string TypeHistogram(const ModelWeights& weights,
+                                        const MtpWeights* mtp = nullptr);
+
 }  // namespace gufo::models::qwen36_35b_a3b
 
 #endif  // GUFO_MODELS_QWEN36_35B_A3B_WEIGHTS_HPP_

@@ -13,11 +13,17 @@ function(add_qwen36_35b_a3b_test name library labels)
 endfunction()
 
 add_qwen36_35b_a3b_test(config gufo_qwen36_35b_a3b "cpu")
+add_qwen36_35b_a3b_test(upload_policy gufo_qwen36_35b_a3b "cpu")
+add_qwen36_35b_a3b_test(weights_layout gufo_qwen36_35b_a3b "cpu")
 
 add_executable(qwen36_35b_a3b_reference_probe EXCLUDE_FROM_ALL reference_probe.cpp)
 target_link_libraries(qwen36_35b_a3b_reference_probe PRIVATE
   gufo_qwen36_35b_a3b_reference)
 set_source_files_properties(reference_probe.cpp PROPERTIES COMPILE_OPTIONS "-O2")
+
+# Artifact identity: metadata, formats per role, template hash, stop tokens.
+add_executable(qwen36_35b_a3b_inventory EXCLUDE_FROM_ALL inventory.cpp)
+target_link_libraries(qwen36_35b_a3b_inventory PRIVATE gufo_qwen36_35b_a3b)
 
 if (ENGINE_ENABLE_HIP)
   foreach(name IN ITEMS mtp_ops blaslt_ops gdn_ops attention_ops

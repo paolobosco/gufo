@@ -49,7 +49,8 @@ void CheckPenaltyArgmax(std::uint32_t vocab) {
           .repeat_penalty = mode == 1 ? 0.7F : 1.3F,
           .repeat_last_n = mode == 2 ? 0U : 3U,
           .frequency_penalty = mode == 1 ? -0.4F : 0.2F,
-          .presence_penalty = mode == 1 ? -1.5F : 1.5F};
+          .presence_penalty = mode == 1 ? -1.5F : 1.5F,
+          .constraint = nullptr};
       if (mode >= 3) {
         config.repeat_penalty = 1;
         config.frequency_penalty = 0;

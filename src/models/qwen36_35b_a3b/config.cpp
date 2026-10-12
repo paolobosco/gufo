@@ -168,6 +168,31 @@ std::optional<Config> Config::FromGguf(const core::GgufReader& gguf,
     r.Fail("unsupported Qwen3.6-35B-A3B kernel geometry");
     return std::nullopt;
   }
+  // Optional per-block schedule (1 = Gated DeltaNet). Readers that honour it
+  // instead of full_attention_interval must run the same trunk layers as
+  // these kernels; the trailing MTP block is not constrained.
+  const std::string recurrent = key("attention.recurrent_layers");
+  if (gguf.FindMetadata(recurrent) != nullptr) {
+    const auto flags = r.U64Array(recurrent);
+    if (!r.ok) {
+      return std::nullopt;
+    }
+    if (flags.size() != c.num_layers_all) {
+      r.Fail(recurrent + " must have one entry per block");
+      return std::nullopt;
+    }
+    for (std::uint32_t il = 0; il < c.num_layers_all; ++il) {
+      if (flags[il] > 1) {
+        r.Fail(recurrent + " must hold 0 or 1 at block " + std::to_string(il));
+        return std::nullopt;
+      }
+      if (il < c.num_layers && (flags[il] == 1) != c.IsLinearLayer(il)) {
+        r.Fail(recurrent + " disagrees with full_attention_interval at block " +
+               std::to_string(il));
+        return std::nullopt;
+      }
+    }
+  }
   return c;
 }
 

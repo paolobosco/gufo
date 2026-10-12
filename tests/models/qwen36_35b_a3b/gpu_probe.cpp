@@ -144,7 +144,7 @@ int RunStreams(const std::string& model_path, const std::string& dir,
         slot.request->arrive_s = now;
         slot.session->Reset();
         slot.session->ResetDraftPolicy();
-        slot.sampler = {};
+        slot.sampler = gufo::sampling::SamplerState();
         slot.request->drafted0 = slot.session->Statistics().drafted;
         slot.request->accepted0 = slot.session->Statistics().accepted;
       }

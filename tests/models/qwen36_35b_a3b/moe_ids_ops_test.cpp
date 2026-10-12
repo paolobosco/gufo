@@ -17,9 +17,13 @@
 
 namespace {
 
-// The model's routing: 512 experts, top-10 without replacement.
-constexpr int kExperts = 512;
-constexpr int kUsed = 10;
+// Routing profiles, top-k without replacement: Qwen3.6-35B-A3B routes 256
+// experts top-8; 512 experts top-10 is the wider case.
+struct Routing {
+  int experts;
+  int used;
+};
+constexpr Routing kRoutings[] = {{256, 8}, {512, 10}};
 
 void CheckHip(hipError_t error, const char* operation) {
   if (error != hipSuccess) {
@@ -37,13 +41,17 @@ std::uint32_t NextRandom(std::uint32_t* state) noexcept {
 
 /// Top-k ids per token without replacement, skewed toward low experts so
 /// the buckets are uneven; every 50th token drops one slot (-1).
-std::vector<std::int32_t> MakeIds(int n_tokens, std::uint32_t seed) {
-  std::vector<std::int32_t> ids(static_cast<std::size_t>(n_tokens) * kUsed);
+std::vector<std::int32_t> MakeIds(int n_tokens, Routing routing,
+                                  std::uint32_t seed) {
+  const auto used = static_cast<std::size_t>(routing.used);
+  std::vector<std::int32_t> ids(static_cast<std::size_t>(n_tokens) * used);
   for (int t = 0; t < n_tokens; ++t) {
     std::vector<std::int32_t> chosen;
-    while (chosen.size() < kUsed) {
+    while (chosen.size() < used) {
       const std::uint32_t r = NextRandom(&seed);
-      const int e = static_cast<int>((r % 4 == 0 ? r / 4 : r / 8) % kExperts);
+      const int e =
+          static_cast<int>((r % 4 == 0 ? r / 4 : r / 8) %
+                           static_cast<std::uint32_t>(routing.experts));
       if (std::find(chosen.begin(), chosen.end(), e) == chosen.end()) {
         chosen.push_back(e);
       }
@@ -52,7 +60,7 @@ std::vector<std::int32_t> MakeIds(int n_tokens, std::uint32_t seed) {
       chosen[3] = -1;
     }
     std::copy(chosen.begin(), chosen.end(),
-              ids.begin() + static_cast<std::size_t>(t) * kUsed);
+              ids.begin() + static_cast<std::size_t>(t) * used);
   }
   return ids;
 }
@@ -66,36 +74,36 @@ struct Maps {
 /// llama.cpp's mm_ids_helper contract on the host: rows sorted by expert
 /// then assignment order; a negative id is counted below expert 0 and its
 /// slot left zero; an id past the experts is dropped.
-Maps Reference(const std::vector<std::int32_t>& ids, int n_tokens, int n_used,
-               int si1, int sis1) {
+Maps Reference(const std::vector<std::int32_t>& ids, int experts, int n_tokens,
+               int n_used, int si1, int sis1) {
   Maps m;
   const std::size_t rows = static_cast<std::size_t>(n_tokens) * n_used;
   m.src1.assign(rows, 0);
   m.dst.assign(rows, 0);
-  m.bounds.assign(kExperts + 1, 0);
-  std::vector<int> counts(kExperts, 0);
+  m.bounds.assign(experts + 1, 0);
+  std::vector<int> counts(experts, 0);
   int negatives = 0;
   for (int t = 0; t < n_tokens; ++t) {
     for (int i = 0; i < n_used; ++i) {
       const std::int32_t e = ids[static_cast<std::size_t>(t) * si1 + i];
       if (e < 0) {
         ++negatives;
-      } else if (e < kExperts) {
+      } else if (e < experts) {
         ++counts[e];
       }
     }
   }
   int running = negatives;
-  for (int e = 0; e < kExperts; ++e) {
+  for (int e = 0; e < experts; ++e) {
     m.bounds[e] = running;
     running += counts[e];
   }
-  m.bounds[kExperts] = running;
+  m.bounds[experts] = running;
   std::vector<int> cursor(m.bounds.begin(), m.bounds.end() - 1);
   for (int t = 0; t < n_tokens; ++t) {
     for (int i = 0; i < n_used; ++i) {
       const std::int32_t e = ids[static_cast<std::size_t>(t) * si1 + i];
-      if (e < 0 || e >= kExperts) {
+      if (e < 0 || e >= experts) {
         continue;
       }
       const int pos = cursor[e]++;
@@ -106,8 +114,8 @@ Maps Reference(const std::vector<std::int32_t>& ids, int n_tokens, int n_used,
   return m;
 }
 
-Maps Build(const std::vector<std::int32_t>& ids, int n_tokens, int n_used,
-           int si1, int sis1) {
+Maps Build(const std::vector<std::int32_t>& ids, int experts, int n_tokens,
+           int n_used, int si1, int sis1) {
   const std::size_t rows = static_cast<std::size_t>(n_tokens) * n_used;
   std::int32_t* d_ids = nullptr;
   std::int32_t* d_src1 = nullptr;
@@ -116,12 +124,12 @@ Maps Build(const std::vector<std::int32_t>& ids, int n_tokens, int n_used,
   CheckHip(hipMalloc(&d_ids, ids.size() * 4), "hipMalloc");
   CheckHip(hipMalloc(&d_src1, rows * 4), "hipMalloc");
   CheckHip(hipMalloc(&d_dst, rows * 4), "hipMalloc");
-  CheckHip(hipMalloc(&d_bounds, (kExperts + 1) * 4), "hipMalloc");
+  CheckHip(hipMalloc(&d_bounds, (experts + 1) * 4), "hipMalloc");
   CheckHip(hipMemcpy(d_ids, ids.data(), ids.size() * 4, hipMemcpyHostToDevice),
            "upload");
   CheckHip(hipMemset(d_src1, 0, rows * 4), "memset");
   CheckHip(hipMemset(d_dst, 0, rows * 4), "memset");
-  if (q36_mmq_build_ids_maps(d_ids, d_src1, d_dst, d_bounds, kExperts, n_tokens,
+  if (q36_mmq_build_ids_maps(d_ids, d_src1, d_dst, d_bounds, experts, n_tokens,
                              n_used, 1, si1, sis1, nullptr) != 0) {
     throw std::runtime_error("id map build failed");
   }
@@ -129,12 +137,12 @@ Maps Build(const std::vector<std::int32_t>& ids, int n_tokens, int n_used,
   Maps m;
   m.src1.resize(rows);
   m.dst.resize(rows);
-  m.bounds.resize(kExperts + 1);
+  m.bounds.resize(experts + 1);
   CheckHip(hipMemcpy(m.src1.data(), d_src1, rows * 4, hipMemcpyDeviceToHost),
            "download");
   CheckHip(hipMemcpy(m.dst.data(), d_dst, rows * 4, hipMemcpyDeviceToHost),
            "download");
-  CheckHip(hipMemcpy(m.bounds.data(), d_bounds, (kExperts + 1) * 4,
+  CheckHip(hipMemcpy(m.bounds.data(), d_bounds, (experts + 1) * 4,
                      hipMemcpyDeviceToHost),
            "download");
   (void)hipFree(d_ids);
@@ -290,10 +298,12 @@ void CheckRouter(int tokens, int experts, int used, int pattern) {
 
 int main() {
   try {
-    for (int pattern : {0, 1, 2, 3}) {
-      CheckRouter(1, 512, 10, pattern);
-      CheckRouter(8, 512, 10, pattern);
-      CheckRouter(2048, 512, 10, pattern);
+    for (const Routing routing : kRoutings) {
+      for (int pattern : {0, 1, 2, 3}) {
+        for (int tokens : {1, 8, 2048}) {
+          CheckRouter(tokens, routing.experts, routing.used, pattern);
+        }
+      }
     }
     CheckRouter(17, 8, 8, 1);
     CheckRouter(17, 513, 32, 0);
@@ -301,24 +311,30 @@ int main() {
     CheckRouter(17, 1024, 1, 3);
     std::cout << "Router softmax, ties, guards and replay: passed\n";
     bool ok = true;
-    for (int n_tokens : {37, 512, 2048}) {
-      const auto ids = MakeIds(n_tokens, 0x1234ABCDU + n_tokens);
-      // Gate/up: [n_tokens][kUsed] ids, one activation row per token.
-      const Maps pair_ref = Reference(ids, n_tokens, kUsed, kUsed, 1);
-      const Maps pair_scan = Build(ids, n_tokens, kUsed, kUsed, 1);
-      ok = Same(pair_ref, pair_scan,
-                (std::string("gate/up maps, ") + std::to_string(n_tokens) +
-                 " tokens")
-                    .c_str()) &&
-           ok;
-      // Down: every (token, slot) row is its own single-expert token.
-      const Maps down_ref = Reference(ids, n_tokens * kUsed, 1, 1, 1);
-      const Maps down_scan = Build(ids, n_tokens * kUsed, 1, 1, 1);
-      ok = Same(down_ref, down_scan,
-                (std::string("down maps, ") + std::to_string(n_tokens) +
-                 " tokens")
-                    .c_str()) &&
-           ok;
+    for (const Routing routing : kRoutings) {
+      const int experts = routing.experts;
+      const int used = routing.used;
+      const std::string profile = std::to_string(experts) + " experts top-" +
+                                  std::to_string(used) + ", ";
+      for (int n_tokens : {37, 512, 2048}) {
+        const auto ids = MakeIds(n_tokens, routing, 0x1234ABCDU + n_tokens);
+        // Gate/up: [n_tokens][used] ids, one activation row per token.
+        const Maps pair_ref = Reference(ids, experts, n_tokens, used, used, 1);
+        const Maps pair_scan = Build(ids, experts, n_tokens, used, used, 1);
+        ok = Same(pair_ref, pair_scan,
+                  (profile + "gate/up maps, " + std::to_string(n_tokens) +
+                   " tokens")
+                      .c_str()) &&
+             ok;
+        // Down: every (token, slot) row is its own single-expert token.
+        const Maps down_ref = Reference(ids, experts, n_tokens * used, 1, 1, 1);
+        const Maps down_scan = Build(ids, experts, n_tokens * used, 1, 1, 1);
+        ok = Same(down_ref, down_scan,
+                  (profile + "down maps, " + std::to_string(n_tokens) +
+                   " tokens")
+                      .c_str()) &&
+             ok;
+      }
     }
     return ok ? 0 : 1;
   } catch (const std::exception& error) {

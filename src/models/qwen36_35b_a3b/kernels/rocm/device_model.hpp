@@ -19,8 +19,8 @@ struct DeviceTensor {
   std::uint32_t cols{0};
   std::uint32_t rows{0};
   std::uint32_t experts{1};
-  /// Q8_0 copy of a K-quant dense matrix for the prefill kernels; decode
-  /// reads the compact `data`.
+  /// Q8_0 copy of a K-quant dense matrix or of a trunk Q6_K down-expert
+  /// stack for the prefill kernels; decode reads the compact `data`.
   void* prefill{nullptr};
 
   [[nodiscard]] bool empty() const noexcept { return data == nullptr; }

@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -21,9 +22,15 @@ void Require(bool condition, const std::string& message) {
     throw std::runtime_error(message);
 }
 
+/// A GGUF array of bool (item type 7) or uint8 (item type 0) entries.
+struct ByteArray {
+  std::vector<std::uint8_t> values;
+  bool boolean{true};
+};
+
 using Value =
     std::variant<std::uint32_t, float, std::string, std::vector<std::uint64_t>,
-                 std::vector<std::int64_t>, std::vector<double>>;
+                 std::vector<std::int64_t>, std::vector<double>, ByteArray>;
 using Metadata = std::map<std::string, Value>;
 
 // Minimal metadata-only GGUF: no model or GPU is needed to test the loader.
@@ -57,6 +64,12 @@ std::optional<q36::Config> Parse(const Metadata& fields,
           } else if constexpr (std::is_same_v<T, std::string>) {
             pod(std::uint32_t{8});
             text(item);
+          } else if constexpr (std::is_same_v<T, ByteArray>) {
+            pod(std::uint32_t{9});
+            pod(std::uint32_t{item.boolean ? 7U : 0U});
+            pod(std::uint64_t{item.values.size()});
+            for (const auto entry : item.values)
+              pod(entry);
           } else {
             pod(std::uint32_t{9});
             using E = typename T::value_type;
@@ -82,7 +95,8 @@ std::optional<q36::Config> Parse(const Metadata& fields,
   return result;
 }
 
-// The released Qwen3.6-35B-A3B metadata, MTP block included.
+// The released Qwen3.6-35B-A3B metadata, as in the UD-Q6_K_XL artifact:
+// 40 trunk blocks plus the MTP block.
 Metadata ValidMetadata() {
   Metadata fields{{"general.architecture", std::string{"qwen35moe"}}};
   for (const auto& [key, value] :
@@ -245,12 +259,80 @@ void CheckMalformedMetadata() {
   }
 }
 
+// llama.cpp writes the per-block schedule as a bool array: 1 marks a Gated
+// DeltaNet block. When present it must match full_attention_interval on the
+// trunk; the trailing MTP entry is free.
+void CheckRecurrentLayers() {
+  constexpr const char* kKey = "qwen35moe.attention.recurrent_layers";
+  const auto schedule = [](std::uint32_t blocks, std::uint8_t mtp) {
+    std::vector<std::uint8_t> flags(blocks);
+    for (std::uint32_t il = 0; il < blocks; ++il)
+      flags[il] = il < 40 ? static_cast<std::uint8_t>((il + 1) % 4 != 0) : mtp;
+    return flags;
+  };
+  const auto with = [](Value value, std::uint32_t blocks = 41) {
+    auto fields = ValidMetadata();
+    fields[kKey] = std::move(value);
+    if (blocks == 40) {
+      fields.erase("qwen35moe.nextn_predict_layers");
+      fields["qwen35moe.block_count"] = std::uint32_t{40};
+    }
+    return fields;
+  };
+  const auto accept = [](const Metadata& fields, const std::string& what) {
+    const auto c = Parse(fields);
+    Require(c.has_value() && c->num_layers == 40, "rejected " + what);
+  };
+  const auto reject = [&](const Metadata& fields, const std::string& what) {
+    std::string error;
+    Require(!Parse(fields, &error), "accepted " + what);
+    Require(error.find(kKey) != std::string::npos,
+            "rejected " + what + " without naming the key: " + error);
+  };
+
+  // The released Unsloth artifact omits the key.
+  Require(ValidMetadata().count(kKey) == 0, "the default omits the key");
+  accept(ValidMetadata(), "an artifact without the schedule");
+  accept(with(ByteArray{schedule(41, 0)}), "the 41-block schedule");
+  accept(with(ByteArray{schedule(41, 1)}), "a recurrent MTP entry");
+  accept(with(ByteArray{schedule(41, 0), false}), "a uint8 schedule");
+  {
+    const auto flags = schedule(41, 0);
+    accept(with(std::vector<std::uint64_t>(flags.begin(), flags.end())),
+           "a uint64 schedule");
+  }
+  accept(with(ByteArray{schedule(40, 0)}, 40), "a trunk-only schedule");
+
+  reject(with(ByteArray{schedule(40, 0)}), "a 40-entry schedule");
+  reject(with(ByteArray{schedule(42, 0)}), "a 42-entry schedule");
+  reject(with(ByteArray{schedule(41, 0)}, 40), "MTP entry without MTP block");
+  reject(with(ByteArray{{}}), "an empty schedule");
+  for (const std::uint32_t il : {0U, 3U, 4U, 38U, 39U}) {
+    auto flags = schedule(41, 0);
+    flags[il] = static_cast<std::uint8_t>(flags[il] ^ 1U);
+    reject(with(ByteArray{flags}), "block " + std::to_string(il) + " inverted");
+  }
+  {
+    auto flags = schedule(41, 0);
+    flags[0] = 2;
+    reject(with(ByteArray{flags, false}), "a uint8 entry of 2");
+  }
+  {
+    const auto flags = schedule(41, 0);
+    reject(with(std::vector<double>(flags.begin(), flags.end())),
+           "a float schedule");
+  }
+  reject(with(std::string{"1110"}), "a string schedule");
+  reject(with(std::uint32_t{1}), "a scalar schedule");
+}
+
 }  // namespace
 
 int main() {
   try {
     CheckValidMetadata();
     CheckMalformedMetadata();
+    CheckRecurrentLayers();
   } catch (const std::exception& error) {
     std::cerr << "FAIL: " << error.what() << '\n';
     return 1;

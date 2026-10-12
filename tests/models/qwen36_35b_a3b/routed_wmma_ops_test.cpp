@@ -10,6 +10,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "src/models/qwen36_35b_a3b/kernels/rocm/kernels.hpp"
@@ -538,6 +539,317 @@ void CheckPairedMmq() {
     throw std::runtime_error("paired MMQ differs from separate projections");
 }
 
+/// Restores the default routed MMQ launch hints when a check returns or
+/// throws, so later checks keep the width the tier selects itself.
+struct RoutedHintsReset {
+  RoutedHintsReset() = default;
+  RoutedHintsReset(const RoutedHintsReset&) = delete;
+  RoutedHintsReset& operator=(const RoutedHintsReset&) = delete;
+  ~RoutedHintsReset() {
+    q36_mmq_set_routed_tile_cols(0);
+    q36_mmq_set_routed_max_expert_rows(0);
+  }
+};
+
+const char* FormatName(q::WeightType type) {
+  return type == q::WeightType::kQ6_K ? "Q6_K" : "Q8_0";
+}
+
+Experts MakeUdExperts(q::WeightType type, std::size_t e, std::size_t m,
+                      std::size_t k, std::uint32_t seed) {
+  return type == q::WeightType::kQ6_K ? MakeQ6K(e, m, k, seed)
+                                      : MakeQ8_0(e, m, k, seed);
+}
+
+/// Top-`used` experts per token without replacement, skewed toward the low
+/// experts so the buckets are uneven.
+std::vector<std::int32_t> SkewedIds(std::size_t n_tokens, std::size_t used,
+                                    std::size_t experts, std::uint32_t* state) {
+  std::vector<std::int32_t> ids(n_tokens * used);
+  for (std::size_t t = 0; t < n_tokens; ++t) {
+    std::vector<std::int32_t> chosen;
+    while (chosen.size() < used) {
+      const std::uint32_t r = NextRandom(state);
+      const auto e =
+          static_cast<std::int32_t>((r % 3 == 0 ? r / 3 % 4 : r / 3) % experts);
+      if (std::find(chosen.begin(), chosen.end(), e) == chosen.end()) {
+        chosen.push_back(e);
+      }
+    }
+    std::copy(chosen.begin(), chosen.end(), ids.begin() + t * used);
+  }
+  return ids;
+}
+
+/// Worst |out - F64| over the active slots in steps of `stride`, against
+/// the dequantized weights, and the largest |F64| (the scale). Inactive
+/// slots must hold zeros.
+std::pair<double, double> WorstF64Error(const Experts& w,
+                                        const std::vector<float>& x,
+                                        const std::vector<std::int32_t>& ids,
+                                        const std::vector<float>& out,
+                                        std::size_t used, std::size_t m,
+                                        std::size_t k, std::size_t stride) {
+  double worst = 0.0;
+  double scale = 0.0;
+  for (std::size_t s = 0; s < ids.size(); s += stride) {
+    const std::size_t t = s / used;
+    for (std::size_t row = 0; row < m; ++row) {
+      const float v = out[s * m + row];
+      if (ids[s] < 0) {
+        if (v != 0.0F)
+          throw std::runtime_error("inactive routed slot is not zero");
+        continue;
+      }
+      const float* wr =
+          w.values.data() + (static_cast<std::size_t>(ids[s]) * m + row) * k;
+      const float* xr = x.data() + t * k;
+      double ref = 0.0;
+      for (std::size_t i = 0; i < k; ++i) {
+        ref += static_cast<double>(wr[i]) * xr[i];
+      }
+      if (!std::isfinite(v))
+        throw std::runtime_error("routed output is not finite");
+      worst = std::max(worst, std::abs(ref - v));
+      scale = std::max(scale, std::abs(ref));
+    }
+  }
+  return {worst, scale};
+}
+
+/// Prefill runs every UD-Q6_K_XL routed projection on the raw MMQ tier:
+/// Q6_K gate/up, Q8_0 gate/up in block 39 and every Q8_0 down projection.
+/// The executor requests a column-tile width (16 to 80) and a grid bound
+/// from each chunk's expert buckets, so a slot row must keep its bits for
+/// every width, for a bound at or above the largest bucket and for any
+/// chunk split; the tier stays within its activation quantization of F64.
+void CheckMmqInvariance(q::WeightType type, std::size_t n_tokens,
+                        std::size_t used, std::size_t experts, std::size_t m,
+                        std::size_t k, std::uint32_t seed,
+                        const std::vector<std::vector<std::size_t>>& splits) {
+  const RoutedHintsReset reset;
+  const Experts w = MakeUdExperts(type, experts, m, k, seed);
+  std::uint32_t state = seed ^ 0x5A5A5A5AU;
+  const auto ids = SkewedIds(n_tokens, used, experts, &state);
+  std::vector<float> x(n_tokens * k);
+  for (float& v : x) {
+    v = Uniform(&state, 2.0F);
+  }
+  const std::size_t slots = n_tokens * used;
+  std::uint8_t* d_w = Upload(w.packed);
+  float* d_x = Upload(x);
+  std::int32_t* d_ids = Upload(ids);
+  float* d_out = Upload(std::vector<float>(slots * m, 0.0F));
+  const auto mmq_raw = type == q::WeightType::kQ6_K ? q36_mmq_q6_K_moe_raw
+                                                    : q36_mmq_q8_0_moe_raw;
+  // One chunk with the executor's hints: the requested width and a grid
+  // bound of the chunk's largest bucket or of its token count.
+  const auto launch = [&](std::size_t t0, std::size_t n, int tile,
+                          bool largest_bucket) {
+    std::vector<std::uint32_t> counts(experts, 0);
+    for (std::size_t s = t0 * used; s < (t0 + n) * used; ++s) {
+      ++counts[ids[s]];
+    }
+    const std::uint32_t largest =
+        *std::max_element(counts.begin(), counts.end());
+    q36_mmq_set_routed_max_expert_rows(
+        static_cast<int>(largest_bucket ? largest : n));
+    q36_mmq_set_routed_tile_cols(tile);
+    if (mmq_raw(d_w, d_x + t0 * k, d_ids + t0 * used, d_out + t0 * used * m,
+                static_cast<int>(m), static_cast<int>(k), static_cast<int>(n),
+                static_cast<int>(experts), static_cast<int>(used),
+                nullptr) != 0) {
+      throw std::runtime_error("routed MMQ launch failed");
+    }
+  };
+  launch(0, n_tokens, 16, true);
+  CheckHip(hipDeviceSynchronize(), "reference routed MMQ");
+  const auto reference = Download(d_out, slots * m);
+  const auto [worst, scale] =
+      WorstF64Error(w, x, ids, reference, used, m, k, 4);
+  std::cout << FormatName(type) << " routed MMQ n=" << n_tokens
+            << " used=" << used << " E=" << experts << " m=" << m << " k=" << k
+            << ": worst |MMQ - F64| " << worst << " (scale " << scale << ")\n";
+  if (!(worst < 1e-2 * scale)) {
+    throw std::runtime_error(std::string(FormatName(type)) +
+                             " routed MMQ differs from F64");
+  }
+  for (const int tile : {16, 32, 48, 64, 80}) {
+    for (const bool largest_bucket : {true, false}) {
+      for (const auto& split : splits) {
+        CheckHip(hipMemset(d_out, 0xFF, slots * m * sizeof(float)),
+                 "poison routed MMQ output");
+        std::size_t t0 = 0;
+        std::string chunks;
+        for (const std::size_t n : split) {
+          launch(t0, n, tile, largest_bucket);
+          t0 += n;
+          chunks += (chunks.empty() ? "" : "+") + std::to_string(n);
+        }
+        if (t0 != n_tokens) {
+          throw std::logic_error("routed MMQ split must cover the batch");
+        }
+        CheckHip(hipDeviceSynchronize(), "routed MMQ variant");
+        const auto out = Download(d_out, slots * m);
+        for (std::size_t s = 0; s < slots; ++s) {
+          if (std::memcmp(out.data() + s * m, reference.data() + s * m,
+                          m * sizeof(float)) != 0) {
+            throw std::runtime_error(
+                std::string(FormatName(type)) + " routed MMQ changed slot " +
+                std::to_string(s) + " at tile width " + std::to_string(tile) +
+                (largest_bucket ? ", largest-bucket bound"
+                                : ", token-count bound") +
+                ", chunks " + chunks);
+          }
+        }
+      }
+    }
+  }
+  for (void* p : {static_cast<void*>(d_w), static_cast<void*>(d_x),
+                  static_cast<void*>(d_ids), static_cast<void*>(d_out)}) {
+    CheckHip(hipFree(p), "routed MMQ free");
+  }
+}
+
+/// Decode reads the UD-Q6_K_XL gate/up stacks with the routed vector
+/// kernels. GatedExperts pairs Q6_K gate/up at every width up to 32; it
+/// fuses Q8_0 (block 39) into the gated vector up to eight rows and pairs
+/// it with a separate SwiGLU from nine to 32. With K 2048 and top-8 routing,
+/// a repeated expert and an inactive slot included, every width must
+/// reproduce one-row launches bit for bit, and those stay within their
+/// activation quantization of F64.
+void CheckGateUpVectorWidths() {
+  constexpr int experts = 16;
+  constexpr int cols = 2048;
+  constexpr int tokens = 32;
+  constexpr int used = 8;
+  std::uint32_t state = 0x6A7E0008U;
+  std::vector<std::int32_t> ids(tokens * used);
+  for (int t = 0; t < tokens; ++t) {
+    std::vector<std::int32_t> chosen;
+    while (chosen.size() < static_cast<std::size_t>(used)) {
+      const auto e = static_cast<std::int32_t>(NextRandom(&state) % experts);
+      if (std::find(chosen.begin(), chosen.end(), e) == chosen.end())
+        chosen.push_back(e);
+    }
+    std::copy(chosen.begin(), chosen.end(), ids.begin() + t * used);
+  }
+  // Each output keeps its own slot, also for a repeated expert.
+  ids[7] = ids[0];
+  ids[9 * used + 6] = ids[9 * used + 1];
+  ids[5 * used + 3] = -1;
+  // Mix ordinary and small activations: saturated SwiGLU alone hides
+  // rounding changes.
+  std::vector<float> x(tokens * cols);
+  for (std::size_t i = 0; i < x.size(); ++i)
+    x[i] = Uniform(&state, (i / cols) % 2 ? 1.0F / 128.0F : 2.0F);
+  auto* dx = Upload(x);
+  auto* di = Upload(ids);
+  for (const auto format : {q::WeightType::kQ6_K, q::WeightType::kQ8_0}) {
+    for (const int rows : {512, 65}) {
+      const Experts gate = MakeUdExperts(format, experts, rows, cols, 101);
+      const Experts up = MakeUdExperts(format, experts, rows, cols, 211);
+      auto* dg = Upload(gate.packed);
+      auto* du = Upload(up.packed);
+      const std::size_t count = static_cast<std::size_t>(tokens) * used * rows;
+      const std::vector<float> zeros(count, 0.0F);
+      auto* ref_gate = Upload(zeros);
+      auto* ref_up = Upload(zeros);
+      auto* out_gate = Upload(zeros);
+      auto* out_up = Upload(zeros);
+      const std::string what = std::string(FormatName(format)) + " rows " +
+                               std::to_string(rows) + " width ";
+      for (int t = 0; t < tokens; ++t) {
+        const std::size_t at = static_cast<std::size_t>(t) * used * rows;
+        if (q36_mmq_moe_vec(static_cast<int>(format), dg, dx + t * cols,
+                            di + t * used, ref_gate + at, rows, cols, 1,
+                            experts, used, nullptr) ||
+            q36_mmq_moe_vec(static_cast<int>(format), du, dx + t * cols,
+                            di + t * used, ref_up + at, rows, cols, 1, experts,
+                            used, nullptr))
+          throw std::runtime_error("one-row routed vector launch failed");
+      }
+      CheckHip(hipDeviceSynchronize(), "one-row routed vectors");
+      const auto reference_gate = Download(ref_gate, count);
+      const auto reference_up = Download(ref_up, count);
+      if (rows == 512) {
+        for (const auto* pair : {&gate, &up}) {
+          const auto [worst, scale] = WorstF64Error(
+              *pair, x, ids, pair == &gate ? reference_gate : reference_up,
+              used, rows, cols, 1);
+          std::cout << FormatName(format) << " routed vector "
+                    << (pair == &gate ? "gate" : "up")
+                    << " m=512 k=2048: worst |vec - F64| " << worst
+                    << " (scale " << scale << ")\n";
+          if (!(worst < 1e-2 * scale))
+            throw std::runtime_error(what + "1 differs from F64");
+        }
+      }
+      // The paired projection, as GatedExperts runs Q6_K at every width
+      // and Q8_0 above eight rows.
+      for (int n = 1; n <= tokens; ++n) {
+        const std::size_t live = static_cast<std::size_t>(n) * used * rows;
+        CheckHip(hipMemset(out_gate, 0xFF, count * sizeof(float)),
+                 "poison paired gate");
+        CheckHip(hipMemset(out_up, 0xFF, count * sizeof(float)),
+                 "poison paired up");
+        if (q36_mmq_moe_vec(static_cast<int>(format), dg, dx, di, out_gate,
+                            rows, cols, n, experts, used, nullptr, du, out_up))
+          throw std::runtime_error("paired routed vector launch failed");
+        const auto g = Download(out_gate, live);
+        const auto u = Download(out_up, live);
+        if (std::memcmp(g.data(), reference_gate.data(),
+                        live * sizeof(float)) != 0 ||
+            std::memcmp(u.data(), reference_up.data(), live * sizeof(float)) !=
+                0)
+          throw std::runtime_error(what + std::to_string(n) +
+                                   ": paired vector differs from one-row");
+      }
+      if (format == q::WeightType::kQ8_0) {
+        q::Swiglu(ref_gate, ref_up, count, nullptr);
+        CheckHip(hipDeviceSynchronize(), "one-row SwiGLU");
+        const auto gated_reference = Download(ref_gate, count);
+        for (int n = 1; n <= tokens; ++n) {
+          const std::size_t live = static_cast<std::size_t>(n) * used * rows;
+          CheckHip(hipMemset(out_gate, 0xFF, count * sizeof(float)),
+                   "poison gated output");
+          const bool fused = n <= 8;
+          if (fused ? q36_mmq_moe_gated_vec(static_cast<int>(format), dg, du,
+                                            dx, di, out_gate, rows, cols, n,
+                                            experts, used, nullptr) != 0
+                    : q36_mmq_moe_vec(static_cast<int>(format), dg, dx, di,
+                                      out_gate, rows, cols, n, experts, used,
+                                      nullptr, du, out_up) != 0)
+            throw std::runtime_error("gated routed vector launch failed");
+          if (!fused)
+            q::Swiglu(out_gate, out_up, live, nullptr);
+          const auto gated = Download(out_gate, live);
+          for (std::size_t i = 0; i < live; ++i) {
+            if (std::memcmp(&gated[i], &gated_reference[i], sizeof(float)) !=
+                0) {
+              std::cerr << "first changed slot/row=" << i
+                        << " expected=" << std::hexfloat << gated_reference[i]
+                        << " actual=" << gated[i] << std::defaultfloat << '\n';
+              throw std::runtime_error(
+                  what + std::to_string(n) +
+                  (fused ? ": gated vector" : ": paired vector and SwiGLU") +
+                  " changed the SwiGLU output");
+            }
+          }
+        }
+      }
+      for (void* p :
+           {static_cast<void*>(dg), static_cast<void*>(du),
+            static_cast<void*>(ref_gate), static_cast<void*>(ref_up),
+            static_cast<void*>(out_gate), static_cast<void*>(out_up)}) {
+        CheckHip(hipFree(p), "routed vector free");
+      }
+    }
+  }
+  CheckHip(hipFree(dx), "routed vector input free");
+  CheckHip(hipFree(di), "routed vector IDs free");
+}
+
 }  // namespace
 
 int main() {
@@ -545,6 +857,14 @@ int main() {
     CheckVectorGrouping();
     CheckVectorGrouping(true);
     CheckPairedMmq();
+    // UD-Q6_K_XL gate/up (Q6_K, Q8_0 in block 39) and down (Q8_0) views.
+    CheckGateUpVectorWidths();
+    CheckMmqInvariance(q::WeightType::kQ6_K, 300, 8, 256, 512, 2048,
+                       0x06060001U, {{300}, {1, 299}, {137, 163}});
+    CheckMmqInvariance(q::WeightType::kQ8_0, 300, 8, 256, 512, 2048,
+                       0x08080001U, {{300}, {1, 299}, {137, 163}});
+    CheckMmqInvariance(q::WeightType::kQ8_0, 2400, 1, 256, 2048, 512,
+                       0x08080002U, {{2400}, {8, 2392}, {1096, 1304}});
     bool ok = true;
     // Gate/up view: 256 experts, top-8, 512 x 2048 Q4_K (Q5_K in the MTP
     // layer).
