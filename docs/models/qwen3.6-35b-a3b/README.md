@@ -67,8 +67,9 @@ at least 0.5. Greedy MTP output must equal AR token for token.
 The official template defaults to thinking on and has no reasoning-effort
 control. It drops reasoning from turns before the last user message unless
 `preserve_thinking` is set. Gufo sets it by default, as the model card
-recommends for agents and as Flash-Next does, so each new user turn extends
-the cached previous generation. `--preserve-thinking off` or
+recommends for agents and as Flash-Next does, so a new user turn extends the
+cached previous generation when the client replays reasoning
+(`reasoning_content`, thinking blocks or inline `<think>`) or thinking is off. `--preserve-thinking off` or
 `chat_template_kwargs.preserve_thinking=false` restores the template default;
 reasoning inside the current tool cycle is kept either way. Sampling
 defaults follow the model card (thinking: temperature 1.0, top-p 0.95; off:

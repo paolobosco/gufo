@@ -142,10 +142,10 @@ inline constexpr std::size_t kMaxRenderedBytesPerToken = 128;
 /// Suffix opened for a new assistant turn, outside the stable conversation.
 [[nodiscard]] std::string_view GenerationPrompt(bool enable_thinking);
 
-/// Resolve CLI/API controls against the official template defaults of
-/// `family`. For Qwen3.8, provider-neutral minimal/high/max map to native
-/// low/xhigh/xhigh; Qwen3.6 has no reasoning-effort control and keeps
-/// earlier reasoning unless preserve_thinking is false.
+/// Resolve CLI/API controls against the defaults of `family`: the official
+/// template defaults, except that Qwen3.6 keeps earlier reasoning unless
+/// preserve_thinking is false. For Qwen3.8, provider-neutral minimal/high/max
+/// map to native low/xhigh/xhigh; Qwen3.6 has no reasoning-effort control.
 [[nodiscard]] ChatTemplateOptions ResolveQwenChatOptions(
     const ReasoningOptions& reasoning, bool add_vision_id = false,
     QwenTemplateFamily family = QwenTemplateFamily::kQwen38);

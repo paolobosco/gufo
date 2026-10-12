@@ -787,8 +787,9 @@ the backend cannot constrain sampling, an unmet `required` choice still returns
 `tool_choice_unsatisfied` (HTTP 502, or an SSE error after streaming starts).
 Stops and token limits terminate normally. Buffered responses omit an
 interrupted call; a stream that already opened it (Chat argument deltas,
-a Responses `function_call` item) ends it with unparseable arguments, and
-Responses marks the item `incomplete`. Neither is ever executable.
+a Responses `function_call` item, a Messages `tool_use` block) ends it with
+unparseable arguments, and Responses marks the item `incomplete`. None is ever
+executable.
 With no tools or `tool_choice:"none"`, tool markers are ordinary text and do
 not interrupt reasoning or delay streaming.
 
@@ -856,7 +857,7 @@ the response schema constrains the latter. Use `"none"` for JSON answers only,
 `"required"` to force a call, or select a named function.
 `"required"` and a named function constrain decoding regardless of tool
 strictness; `parallel_tool_calls:false` allows at most one call and constrains
-it likewise. Interrupted calls are omitted.
+it likewise. Interrupted calls are never completed (see token limits above).
 
 References: [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create),
 [function calling](https://developers.openai.com/api/docs/guides/function-calling),
