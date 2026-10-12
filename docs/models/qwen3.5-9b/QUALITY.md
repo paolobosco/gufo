@@ -40,7 +40,9 @@ Skipped sub-checks are listed on the final line (`skipped (not passes)`).
 
 Provisional limits, to be replaced by measured values and a negative control:
 relative L2 0.05 / 0.08 / 0.15 for taps 3 / 7 / 31, KL 0.05 nats for
-prefill versus decode and for CPU versus GPU, top-1 agreement required.
+prefill versus decode and for CPU versus GPU. Prefill versus decode requires
+the same top-1 token; CPU versus GPU accepts a different top-1 only when the
+GPU choice lies within 0.1 logits of the CPU maximum.
 
 ## Reproduce
 

@@ -46,8 +46,10 @@ levels and no preserved thinking; reasoning of earlier turns is rendered only
 after the last user query, and inline `<think>` in assistant content is split
 out when `reasoning_content` is absent. `preserve_thinking` is accepted and
 ignored. A non-off `reasoning_effort` (top-level, `chat_template_kwargs` or
-`--reasoning-effort`) selects no effort level but turns thinking on unless
-thinking is set explicitly.
+`--reasoning-effort`) selects no effort level and only turns thinking on. A
+top-level effort with an explicit thinking-off, or `--reasoning-effort` with
+`--think off`, is rejected; `chat_template_kwargs.reasoning_effort` and the
+server's `--reasoning-effort` default give way to an explicit thinking-off.
 
 The thinking default (`--think auto`) comes from the artifact's template:
 
