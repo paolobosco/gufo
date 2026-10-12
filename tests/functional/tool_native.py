@@ -359,14 +359,14 @@ def check_read_arguments(client, model, checks, chat_result):
                 result = response_result(client, dict(
                     model=model, input=prompt, tools=[{"type": "function", **function}],
                     tool_choice="auto", reasoning={"effort": "low"},
-                    max_output_tokens=256, store=False, extra_body={"seed": 0},
+                    max_output_tokens=1024, store=False, extra_body={"seed": 0},
                     **sampling), stream)
             else:
                 result = chat_result(client, dict(
                     model=model, messages=[{"role": "user", "content": prompt}],
                     tools=[{"type": "function", "function": function}],
                     tool_choice="auto", reasoning_effort="low",
-                    max_completion_tokens=256, seed=0, **sampling), stream)
+                    max_completion_tokens=1024, seed=0, **sampling), stream)
             checks[label] = result
             assert len(result["tools"]) == 1, (label, result)
             call = result["tools"][0]["function"]

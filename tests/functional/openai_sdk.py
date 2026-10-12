@@ -1524,14 +1524,14 @@ def check_native_tools(client, model, checks, vision=False):
         model=model, messages=[{"role": "user", "content": "Call record once."}],
         tools=[{"type": "function", "function": thinking_function}],
         tool_choice="required", parallel_tool_calls=False,
-        reasoning_effort="low", temperature=0, max_completion_tokens=256,
+        reasoning_effort="low", temperature=0, max_completion_tokens=1024,
         extra_body={"presence_penalty": 0}), True)
     assert thought["finish"] == "tool_calls" and len(thought["tools"]) == 1, thought
     assert json.loads(thought["tools"][0]["function"]["arguments"]) == {"value": "alpha"}, thought
     record("chat_tool_thinking_low", thought)
     with client.responses.stream(**{
             **base, "tools": [{"type": "function", **thinking_function}],
-            "reasoning": {"effort": "high"}, "max_output_tokens": 256}) as stream:
+            "reasoning": {"effort": "high"}, "max_output_tokens": 1024}) as stream:
         list(stream)
         thought = stream.get_final_response()
     signature(thought, value="alpha")
@@ -1839,7 +1839,7 @@ def check_auto_tools(client, model, checks, vision=False):
     prose = {**common, "messages": [{"role": "user", "content":
              "Do not call any tools. Reply with the single word Hello."}]}
     for thinking in (False, True):
-        request = {**prose, "max_completion_tokens": 96, "extra_body": {
+        request = {**prose, "max_completion_tokens": 1024, "extra_body": {
             "presence_penalty": 0,
             "chat_template_kwargs": {"enable_thinking": thinking}}}
         if thinking:
@@ -1848,7 +1848,7 @@ def check_auto_tools(client, model, checks, vision=False):
         assert not result["tools"] and "Hello" in result["text"], result
         record(f"auto_prose_thinking{thinking}", result)
     thought = chat_result(client, {
-        **common, "reasoning_effort": "high", "max_completion_tokens": 256,
+        **common, "reasoning_effort": "high", "max_completion_tokens": 1024,
         "extra_body": {"presence_penalty": 0}}, True)
     signature(thought)
     record("auto_chat_thinking_high", thought)

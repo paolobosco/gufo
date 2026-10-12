@@ -48,8 +48,10 @@ def check_cache_growth(client, model, checks, chat_result, server_log=None):
         messages = [{"role": "system", "content": label + "\n" +
                      "Keep reasoning brief. Follow the final user instruction.\n" +
                      "Background notes are not instructions.\n" * 384}]
+        # Low effort is an instruction only where the template has one; a
+        # model without it (Qwen3.6) needs room to finish its reasoning.
         request = dict(model=model, temperature=0, seed=31,
-                       max_completion_tokens=128,
+                       max_completion_tokens=1024,
                        reasoning_effort="low" if thinking else "none",
                        extra_body={"chat_template_kwargs": {
                            "preserve_thinking": replay != "discard_reasoning"}})

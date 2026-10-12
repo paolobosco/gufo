@@ -29,7 +29,7 @@ BF16 model.
 | Full model | `session_test` (`--prefill-only`, `--batch-only`, then complete) and `snapshot_test` pass: greedy MTP equals AR token for token, C2 to C8 equal isolated execution, prefill chunks are bit-identical, seeded replay is exact | TODO |
 | Upstream agreement, llama.cpp `b11069` | 8 prompts × up to 64 teacher-forced positions, then recall prompts of about 7K and 15K tokens: tokenization matches for every prompt; top-1 at least 99%; mean KL at most 0.005; KL p99 at most 0.1 | TODO |
 | CLI | `gufo prompt` at temperature 0 prints the same `[TokenTrace]` for AR and MTP. `gufo bench --validate-prefill 2048` reports `finite=1` and winner rank 1; cosine, RMSE and maximum error are recorded here as measurements | TODO |
-| Serving | `tests/functional/run.py --record-baseline` with preset `qwen36`, suites `all` and `metrics`, prints `record-baseline passed` for AR and for MTP | TODO |
+| Serving | `tests/functional/run.py --record-baseline` with preset `qwen36` and `--context 32768`: suite `all`, then `state-edges`, `progress`, `metrics` and `cache-edits` on a fresh server; each prints `record-baseline passed` for AR and for MTP | TODO |
 | Shared paths | Flash-Next, Qwen3.8 27B and DeepSeek V4 Flash session and serving checks pass before and after on the same files; `gufo prompt` and `gufo chat` with `--speculative mtp` and no `--mtp-model` exit 2 before loading weights on those models; `gufo bench` and `gufo serve llm` keep their upstream exit status 1. A skip leaves the check open | TODO |
 | Benchmarks | [Benchmarks](BENCHMARKS.md) cells measured | TODO |
 
@@ -83,7 +83,9 @@ python3 tests/models/qwen36_35b_a3b/llama_parity.py \
   --speculative mtp
 ./result/bin/gufo bench -m "$MODEL" --validate-prefill 2048
 
-# Serving; repeat with --speculative mtp, a new --output and --suite metrics
+# Serving; repeat with --speculative mtp and a new --output. Then run
+# state-edges, progress, metrics and cache-edits on a fresh server, since a
+# long run fills the 128 RAM checkpoint records their unchanged retries need.
 nix develop -c python3 tests/functional/run.py --record-baseline \
   --output "$OUT/ar" --sampling-preset qwen36 --suite all \
   --expected-input-modalities text -- \

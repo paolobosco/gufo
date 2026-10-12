@@ -51,7 +51,10 @@ toolchain, weights, settings and preceding cache history.
 Use `qwen36` for Qwen3.6 and `deepseek4` for DeepSeek. Pass the model's normal
 speculative options for DFlash2, MTP or DSpark. Server sampling arguments
 become the expected defaults; `--mmproj` enables image cases. Keep
-informational server logging enabled.
+informational server logging enabled. Thinking budgets leave room for models
+whose template has no reasoning-effort instruction (Qwen3.6): `low` shortens
+reasoning only where the template renders it, and a larger budget does not
+change greedy output that already stopped.
 
 Each invocation tests **one model and one mode**. Model-specific changes need
 only the affected target/modes. For shared text changes, run the affected suites
@@ -259,7 +262,11 @@ omitted, preserved and explicitly discarded reasoning, plus thinking off.
 Unchanged retries in `cache-growth` and `cache-depth` must prefill nothing,
 unless the runner's server log shows that memory pressure refused the retry
 copy; the retry may then prefill only the assistant opening after the stable
-boundary.
+boundary. `state-edges`, `progress`, `metrics` and `cache-edits` have no such
+exception. The RAM cache keeps 128 records; once enough distinct prompts have
+passed through one server it refuses retry copies
+(`event=snapshot action=skipped reason=entry_capacity`), so a long
+`--suite all` run can fail them. Select them in a fresh invocation.
 `cache-rotation` visits four conversations and eight small side requests; use
 `--sessions 1` to verify retention is independent of execution slots. It also
 checks the startup RAM cap; byte/record pressure is covered by CPU tests.

@@ -79,7 +79,7 @@ def check_reasoning_separator(client, model, checks, chat_result):
                            "presence_penalty": 0, "frequency_penalty": 0})
             if endpoint == "chat":
                 request.update(messages=[{"role": "user", "content": prompt}],
-                               reasoning_effort="low", max_completion_tokens=256)
+                               reasoning_effort="low", max_completion_tokens=1024)
                 if mode == "tools":
                     request.update(tools=[{"type": "function", "function": function}],
                                    tool_choice="auto")
@@ -90,7 +90,7 @@ def check_reasoning_separator(client, model, checks, chat_result):
                 run = chat_result
             else:
                 request.update(input=prompt, reasoning={"effort": "low"},
-                               max_output_tokens=256, store=False)
+                               max_output_tokens=1024, store=False)
                 if mode == "tools":
                     request.update(tools=[{"type": "function", **function}], tool_choice="auto")
                 elif mode == "schema":
@@ -353,7 +353,7 @@ def check_unfinished_lookalike(client, model, checks, chat_result):
                        messages=[{"role": "system", "content": TAIL_LOOKALIKE_SYSTEM},
                                  {"role": "user", "content": UNFINISHED_LOOKALIKE_PROMPT}],
                        tools=tools, temperature=0, seed=41,
-                       reasoning_effort="low", max_completion_tokens=512,
+                       reasoning_effort="low", max_completion_tokens=2048,
                        extra_body={"cache_prompt": False})
         result = chat_result(client, request, streaming)
         checks[label] = result
@@ -390,7 +390,7 @@ def check_tail_lookalike_content(client, model, checks, chat_result):
                            messages=[{"role": "system", "content": TAIL_LOOKALIKE_SYSTEM},
                                      {"role": "user", "content": prompt}],
                            tools=tools, temperature=0, seed=41,
-                           reasoning_effort="low", max_completion_tokens=512,
+                           reasoning_effort="low", max_completion_tokens=2048,
                            extra_body={"cache_prompt": False})
             result = chat_result(client, request, streaming)
             checks[label] = result
@@ -656,7 +656,7 @@ def check_html_content(client, model, checks, chat_result):
         request = dict(model=model,
                        messages=[{"role": "user", "content": prompt}],
                        tools=tools, temperature=0, seed=43,
-                       reasoning_effort="low", max_completion_tokens=512,
+                       reasoning_effort="low", max_completion_tokens=2048,
                        extra_body={"cache_prompt": False})
         result = chat_result(client, request, streaming)
         checks[label] = result
@@ -826,12 +826,12 @@ def check_tool_reasoning(client, model, checks, chat_result, sampling_preset=Non
                     tools=[{"type": "function", "function": function}],
                     tool_choice="required", parallel_tool_calls=False,
                     reasoning_effort="low", temperature=0, seed=41,
-                    max_completion_tokens=1024, extra_body={"cache_prompt": False})
+                    max_completion_tokens=4096, extra_body={"cache_prompt": False})
         responses = dict(model=model, input=PROMPT,
                          tools=[{"type": "function", **function}],
                          tool_choice="required", parallel_tool_calls=False, store=False,
                          reasoning={"effort": "low"}, temperature=0,
-                         max_output_tokens=1024,
+                         max_output_tokens=4096,
                          extra_body={"seed": 41, "cache_prompt": False})
         label = "strict" if strict else "non_strict"
         for endpoint, request in (("chat", chat), ("responses", responses)):
