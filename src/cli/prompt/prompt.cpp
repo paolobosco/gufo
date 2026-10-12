@@ -292,6 +292,20 @@ ReasoningOptions PromptReasoningOptions(const PromptOptions& options) {
   return reasoning;
 }
 
+// The artifact's template decides the Qwen dialect and thinking default; an
+// unpinned Qwen3.8 template is rejected.
+std::optional<tokenization::QwenTemplateTraits> PromptTemplateTraits(
+    const core::GgufReader& reader) {
+  std::string note;
+  const auto chat_template =
+      tokenization::QwenChatTemplate::CreateFromGguf(reader, &note);
+  if (chat_template == nullptr) {
+    std::cerr << "Unsupported Qwen chat template: " << note << '\n';
+    return std::nullopt;
+  }
+  return chat_template->Traits();
+}
+
 #if defined(ENGINE_ENABLE_HIP)
 constexpr std::uint32_t kDefaultContext = 4096;
 
@@ -629,16 +643,17 @@ std::shared_ptr<models::qwen::vision::Encoder> LoadQwenVision(
 std::shared_ptr<const models::qwen::vision::Prompt> PrepareVision(
     const PromptOptions& opt, const tokenization::QwenTokenizer& tokenizer,
     std::span<const tokenization::ChatMessage> messages,
-    const std::shared_ptr<models::qwen::vision::Encoder>& encoder) {
+    const std::shared_ptr<models::qwen::vision::Encoder>& encoder,
+    const tokenization::QwenTemplateTraits& traits) {
   if (!encoder)
     throw std::invalid_argument(
         "image input requires a matching --mmproj BF16 sidecar");
   const auto reasoning = PromptReasoningOptions(opt);
   return std::make_shared<models::qwen::vision::Prompt>(
-      models::qwen::vision::Prepare(
-          tokenizer, messages, {},
-          tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id),
-          encoder->identity(), kDefaultContext));
+      models::qwen::vision::Prepare(tokenizer, messages, {},
+                                    tokenization::ResolveQwenChatOptions(
+                                        traits, reasoning, opt.add_vision_id),
+                                    encoder->identity(), kDefaultContext));
 }
 
 std::shared_ptr<models::qwen38_flash_next::Model> LoadFlashNextModel(
@@ -1004,7 +1019,14 @@ int RunPrompt(std::span<const char* const> args) {
 
   std::string rendered_prompt = opt.prompt_text;
   std::vector<tokenization::ChatMessage> messages;
+  auto template_traits = tokenization::kQwen38TemplateTraits;
   if (opt.use_chat_template) {
+    const auto traits = PromptTemplateTraits(*reader);
+    if (!traits.has_value()) {
+      PrintModelLoadTime(model_load_start, false);
+      return 1;
+    }
+    template_traits = *traits;
     if (!opt.system_prompt.empty()) {
       messages.push_back(
           {tokenization::ChatRole::kSystem, opt.system_prompt, "", ""});
@@ -1013,8 +1035,8 @@ int RunPrompt(std::span<const char* const> args) {
         {tokenization::ChatRole::kUser, opt.prompt_text, "", ""});
     const auto reasoning = PromptReasoningOptions(opt);
     const auto rendered = tokenization::QwenChatTemplate::Render(
-        messages,
-        tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id));
+        messages, tokenization::ResolveQwenChatOptions(
+                      template_traits, reasoning, opt.add_vision_id));
     if (rendered.has_value()) {
       rendered_prompt = *rendered;
     } else {
@@ -1041,7 +1063,7 @@ int RunPrompt(std::span<const char* const> args) {
       if (!opt.image_paths.empty()) {
         AttachImages(opt, messages.back());
         auto vision = PrepareVision(opt, model->tokenizer(), messages,
-                                    model->VisionEncoder());
+                                    model->VisionEncoder(), template_traits);
         session->ConfigureVision(vision);
         return GenerateFlashNextResponse(opt, *model, *session, vision->tokens);
       }
@@ -1064,8 +1086,8 @@ int RunPrompt(std::span<const char* const> args) {
         auto encoder = LoadQwenVision(opt, *reader);
         if (!opt.image_paths.empty()) {
           AttachImages(opt, messages.back());
-          auto vision =
-              PrepareVision(opt, gpu_exec->GetTokenizer(), messages, encoder);
+          auto vision = PrepareVision(opt, gpu_exec->GetTokenizer(), messages,
+                                      encoder, template_traits);
           prompt_tokens = vision->tokens;
           gpu_exec->ConfigureVision(std::move(vision), std::move(encoder));
         }
@@ -1215,6 +1237,10 @@ int RunChat(std::span<const char* const> args) {
   }
 #endif
 
+  const auto template_traits = PromptTemplateTraits(*reader);
+  if (!template_traits.has_value()) {
+    return 1;
+  }
   const tokenization::QwenTokenizer* tokenizer = nullptr;
   std::string architecture;
   std::unique_ptr<models::QwenGenerator> generator;
@@ -1314,8 +1340,8 @@ int RunChat(std::span<const char* const> args) {
     history.push_back({tokenization::ChatRole::kUser, user_input, "", ""});
     const auto reasoning = PromptReasoningOptions(opt);
     const auto rendered_prompt = tokenization::QwenChatTemplate::Render(
-        history,
-        tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id));
+        history, tokenization::ResolveQwenChatOptions(
+                     *template_traits, reasoning, opt.add_vision_id));
     if (!rendered_prompt.has_value()) {
       std::cerr << "Error formatting chat template.\n";
       return 1;
@@ -1332,7 +1358,8 @@ int RunChat(std::span<const char* const> args) {
         AttachImages(opt, history.back());
       first_turn = false;
       if (!opt.image_paths.empty()) {
-        auto vision = PrepareVision(opt, *tokenizer, history, vision_encoder);
+        auto vision = PrepareVision(opt, *tokenizer, history, vision_encoder,
+                                    *template_traits);
         prompt_tokens = vision->tokens;
         if (flash_session)
           flash_session->ConfigureVision(vision);
@@ -1368,11 +1395,13 @@ int RunChat(std::span<const char* const> args) {
 
     std::cout << '\n';
     tokenization::ChatMessage reply{tokenization::ChatRole::kAssistant, ""};
-    if (tokenization::ResolveQwenChatOptions(reasoning, opt.add_vision_id)
+    if (tokenization::ResolveQwenChatOptions(*template_traits, reasoning,
+                                             opt.add_vision_id)
             .enable_thinking) {
       constexpr std::string_view end = "</think>";
       const auto boundary = assistant_reply.find(end);
       reply.thought = assistant_reply.substr(0, boundary);
+      reply.has_thought = true;
       if (boundary != std::string::npos) {
         reply.content = assistant_reply.substr(boundary + end.size());
       }

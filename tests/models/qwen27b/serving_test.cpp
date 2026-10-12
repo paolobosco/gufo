@@ -655,8 +655,8 @@ int main(int argc, const char* const* argv) {
       // now-default thinking trace at its 32-token budget.
       gufo::server::ChatRequest spec_request(spec_messages);
       spec_request.reasoning.enabled = false;
-      const auto template_options =
-          gufo::tokenization::ResolveQwenChatOptions(spec_request.reasoning);
+      const auto template_options = gufo::tokenization::ResolveQwenChatOptions(
+          gufo::tokenization::kQwen38TemplateTraits, spec_request.reasoning);
       const auto first_spec_chat =
           speculative_backend.chat(spec_request, 32, {});
       const auto stop_prompt = gufo::tokenization::QwenChatTemplate::Render(

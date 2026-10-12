@@ -1,13 +1,17 @@
 #include "src/models/qwen/chat_template.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "src/core/crypto/sha256.hpp"
@@ -265,6 +269,7 @@ void TestHuggingFaceRenderedGoldens() {
   using gufo::tokenization::ChatMessage;
   using gufo::tokenization::ChatRole;
   using gufo::tokenization::ChatTemplateOptions;
+  using gufo::tokenization::kQwen38TemplateTraits;
   using gufo::tokenization::QwenChatTemplate;
   using gufo::tokenization::QwenReasoningEffort;
   using gufo::tokenization::ResolveQwenChatOptions;
@@ -297,7 +302,8 @@ void TestHuggingFaceRenderedGoldens() {
 
   ChatTemplateOptions options;
   check(base, options, "thinking_xhigh");
-  check(base, ResolveQwenChatOptions({}), "thinking_xhigh");
+  check(base, ResolveQwenChatOptions(kQwen38TemplateTraits, {}),
+        "thinking_xhigh");
   options.enable_thinking = false;
   check(base, options, "chat");
 
@@ -311,7 +317,8 @@ void TestHuggingFaceRenderedGoldens() {
   for (const auto effort :
        {gufo::ReasoningEffort::kLow, gufo::ReasoningEffort::kMedium,
         gufo::ReasoningEffort::kXHigh}) {
-    const auto resolved = ResolveQwenChatOptions({.effort = effort});
+    const auto resolved =
+        ResolveQwenChatOptions(kQwen38TemplateTraits, {.effort = effort});
     const auto expected = effort == gufo::ReasoningEffort::kLow
                               ? QwenReasoningEffort::kLow
                           : effort == gufo::ReasoningEffort::kMedium
@@ -326,6 +333,7 @@ void TestHuggingFaceRenderedGoldens() {
   }
   check(base,
         ResolveQwenChatOptions(
+            kQwen38TemplateTraits,
             {.enabled = false, .effort = gufo::ReasoningEffort::kLow}),
         "chat");
 
@@ -584,6 +592,395 @@ void TestToolReplayPreservesGeneratedPrefix() {
          "Structured tool replay is byte-identical to generated syntax");
 }
 
+std::string ReadReference(std::string_view path, bool strip_final_lf) {
+  std::string text = ReadText(path);
+  Expect(!text.empty(), "Pinned Qwen3.5 template reference is readable");
+  if (strip_final_lf) {
+    Expect(text.ends_with('\n'), "Repository template copy ends with LF");
+    text.pop_back();
+  }
+  return text;
+}
+
+struct Qwen35Reference {
+  std::string_view variant;
+  std::string text;
+  gufo::tokenization::QwenTemplateTraits traits;
+};
+
+std::vector<Qwen35Reference> Qwen35References() {
+  using gufo::tokenization::QwenTemplateDialect;
+  return {
+      {"official",
+       ReadReference(GUFO_QWEN35_CHAT_TEMPLATE_REFERENCE, true),
+       {QwenTemplateDialect::kQwen35, true, true}},
+      {"gguf",
+       ReadReference(GUFO_QWEN35_UNSLOTH_GGUF_CHAT_TEMPLATE_REFERENCE, true),
+       {QwenTemplateDialect::kQwen35, false, true}},
+      {"unsloth",
+       ReadReference(GUFO_QWEN35_UNSLOTH_CHAT_TEMPLATE_REFERENCE, false),
+       {QwenTemplateDialect::kQwen35, true, false}},
+  };
+}
+
+bool SameTraits(const gufo::tokenization::QwenTemplateTraits& a,
+                const gufo::tokenization::QwenTemplateTraits& b) {
+  return a.dialect == b.dialect &&
+         a.default_enable_thinking == b.default_enable_thinking &&
+         a.emit_empty_system == b.emit_empty_system;
+}
+
+std::unique_ptr<gufo::tokenization::QwenChatTemplate> TemplateFromGguf(
+    std::string_view name, std::optional<std::string_view> chat_template,
+    std::string* error = nullptr) {
+  GgufTemplateBuilder builder;
+  builder.AddMetadataString("general.name", name);
+  if (chat_template.has_value())
+    builder.AddMetadataString("tokenizer.chat_template", *chat_template);
+  const auto binary = builder.Build();
+  std::string open_error;
+  auto reader = gufo::core::GgufReader::OpenMemory(binary.data(), binary.size(),
+                                                   &open_error);
+  Expect(reader != nullptr, "Template GGUF opens: " + open_error);
+  std::string note;
+  return gufo::tokenization::QwenChatTemplate::CreateFromGguf(
+      *reader, error != nullptr ? error : &note);
+}
+
+void TestQwen35TemplateClassification() {
+  using gufo::tokenization::QwenChatTemplate;
+  using gufo::tokenization::QwenTemplateDialect;
+  using gufo::tokenization::QwenTemplateTraits;
+  for (const auto& reference : Qwen35References()) {
+    for (const auto& tpl : {QwenChatTemplate::CreateDefault(reference.text),
+                            TemplateFromGguf("Qwen3.5-9B", reference.text)}) {
+      Expect(tpl != nullptr, "Pinned Qwen3.5 template is accepted");
+      Expect(tpl->GetProfile() == QwenChatTemplate::Profile::kQwen35 &&
+                 tpl->GetTemplateId() == "qwen35-compiled-v1" &&
+                 tpl->IsRecognized(),
+             "Pinned Qwen3.5 template selects the Qwen3.5 profile");
+      Expect(SameTraits(tpl->Traits(), reference.traits),
+             "Pinned Qwen3.5 template carries its own defaults");
+    }
+  }
+  Expect(QwenChatTemplate::CreateDefault(Qwen35References()[0].text)
+                 ->GetTemplateSha256() ==
+             QwenChatTemplate::Qwen35OfficialTemplateSha256(),
+         "Official Qwen3.5 template hash is pinned exactly");
+
+  // Fine-tunes ship edited templates: Qwen3.5 rules, thinking default read
+  // from the generation branch, and no claim that the template is pinned.
+  const auto official = Qwen35References()[0].text;
+  const auto gguf = Qwen35References()[1].text;
+  for (const auto& [text, thinking] :
+       {std::pair{official + "\n", true}, std::pair{gguf + "\n", false},
+        std::pair{std::string("{{ reasoning_effort }}") + official, true}}) {
+    const auto tpl = TemplateFromGguf("OmniCoder-9B", text);
+    Expect(tpl != nullptr && !tpl->IsRecognized() &&
+               tpl->GetProfile() == QwenChatTemplate::Profile::kQwen35,
+           "Unpinned non-Qwen3.8 template uses the Qwen3.5 rules");
+    Expect(SameTraits(tpl->Traits(),
+                      QwenTemplateTraits{QwenTemplateDialect::kQwen35, thinking,
+                                         true}),
+           "Unpinned template thinking default follows its text");
+  }
+  std::string error;
+  const auto missing = TemplateFromGguf("Qwen3.5-9B", std::nullopt, &error);
+  Expect(missing != nullptr && !missing->IsRecognized() &&
+             SameTraits(missing->Traits(),
+                        {QwenTemplateDialect::kQwen35, true, true}) &&
+             error.find("Qwen3.5") != std::string::npos,
+         "A missing template uses the official Qwen3.5 defaults");
+  Expect(TemplateFromGguf("Qwen3.8-27B", official) == nullptr,
+         "A Qwen3.8 artifact still requires its pinned template");
+  std::string qwen38 = ReadText(GUFO_QWEN38_CHAT_TEMPLATE_REFERENCE);
+  qwen38.pop_back();
+  const auto reused = TemplateFromGguf("Qwen3.5-9B-Reasoning", qwen38);
+  Expect(
+      reused != nullptr &&
+          reused->GetProfile() == QwenChatTemplate::Profile::kQwen38Reasoning &&
+          SameTraits(reused->Traits(),
+                     gufo::tokenization::kQwen38TemplateTraits),
+      "The pinned Qwen3.8 template keeps Qwen3.8 rules on any artifact");
+}
+
+gufo::tokenization::ChatRole RoleFromName(std::string_view role) {
+  using gufo::tokenization::ChatRole;
+  if (role == "system")
+    return ChatRole::kSystem;
+  if (role == "developer")
+    return ChatRole::kDeveloper;
+  if (role == "assistant")
+    return ChatRole::kAssistant;
+  if (role == "tool")
+    return ChatRole::kTool;
+  Expect(role == "user", "Golden case uses a known role");
+  return ChatRole::kUser;
+}
+
+// Builds request messages as the OpenAI parser does, including the Python
+// renderings of tool arguments taken from their JSON text.
+std::vector<gufo::tokenization::ChatMessage> GoldenMessages(
+    const gufo::json::Value& messages) {
+  using gufo::tokenization::ChatMessage;
+  std::vector<ChatMessage> output;
+  auto image = std::make_shared<const std::vector<std::uint8_t>>(1, 0);
+  for (const auto& item : messages.items()) {
+    ChatMessage message;
+    message.role = RoleFromName(item.member_str("role"));
+    message.content = item.member_str("content");
+    if (const auto* reasoning = item.find("reasoning_content")) {
+      message.thought = reasoning->get_str();
+      message.has_thought = true;
+    }
+    if (const auto* offsets = item.find("image_offsets")) {
+      for (const auto& offset : offsets->items())
+        message.images.push_back({offset.as_size(), image});
+    }
+    if (const auto* calls = item.find("tool_calls")) {
+      for (const auto& call : calls->items()) {
+        ChatMessage::ToolCall tool_call;
+        tool_call.name = call.member_str("name");
+        const std::string arguments = call.member_str("arguments");
+        const auto parsed = gufo::json::parse(arguments);
+        for (const auto& [name, value] : parsed.members()) {
+          tool_call.arguments.push_back({
+              .name = name,
+              .value = value.is_string() ? value.get_str() : value.dump(),
+              .is_string = value.is_string(),
+          });
+        }
+        Expect(gufo::tokenization::AssignQwenPythonToolValues(
+                   arguments, tool_call.arguments),
+               "Tool arguments keep their Python renderings");
+        message.tool_calls.push_back(std::move(tool_call));
+      }
+    }
+    output.push_back(std::move(message));
+  }
+  return output;
+}
+
+void TestQwen35HuggingFaceGoldens() {
+  using gufo::tokenization::QwenChatTemplate;
+  std::ifstream input(GUFO_CHAT_TEMPLATE_HF_GOLDENS);
+  Expect(input.good(), "Template fixture opens");
+  const auto fixture = gufo::json::parse(std::string{
+      std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()});
+  const auto* section = fixture.find("qwen35");
+  Expect(section != nullptr, "Fixture has Qwen3.5 goldens");
+  const auto references = Qwen35References();
+  std::size_t checked = 0;
+  for (const auto& [name, golden] : section->find("cases")->members()) {
+    const std::string variant = golden.member_str("template");
+    const auto reference =
+        std::find_if(references.begin(), references.end(),
+                     [&](const auto& item) { return item.variant == variant; });
+    Expect(reference != references.end(), "Golden names a pinned template");
+    const auto tpl = QwenChatTemplate::CreateDefault(reference->text);
+    Expect(tpl->GetTemplateSha256() == section->find("templates")
+                                           ->find(variant)
+                                           ->member_str("template_sha256"),
+           "Golden template hash matches the repository copy");
+
+    gufo::ReasoningOptions reasoning;
+    if (const auto* thinking = golden.find("enable_thinking"))
+      reasoning.enabled = thinking->as_bool();
+    const auto options =
+        gufo::tokenization::ResolveQwenChatOptions(tpl->Traits(), reasoning);
+    std::vector<gufo::tokenization::ChatTool> tools;
+    if (const auto* definitions = golden.find("tools")) {
+      for (const auto& definition : definitions->items()) {
+        const auto* function = definition.find("function");
+        tools.push_back(
+            {.name = function->member_str("name"),
+             .description = function->member_str("description"),
+             .parameters_json = function->find("parameters")->dump(),
+             .definition_json = definition.dump()});
+      }
+    }
+    const auto messages = GoldenMessages(*golden.find("messages"));
+    std::string error;
+    const auto rendered =
+        QwenChatTemplate::Render(messages, tools, options, &error);
+    Expect(rendered.has_value(), "Qwen3.5 golden renders: " + error);
+    if (Sha256(*rendered) != golden.member_str("rendered_sha256")) {
+      std::cerr << "Qwen3.5 golden " << name << " rendered:\n"
+                << *rendered << "\n";
+      Expect(false, "Qwen3.5 rendered bytes match the Hugging Face golden");
+    }
+    ++checked;
+  }
+  Expect(checked >= 30, "Qwen3.5 goldens cover every template variant");
+}
+
+void TestQwen35ResolverAndRejections() {
+  using gufo::tokenization::ChatMessage;
+  using gufo::tokenization::ChatRole;
+  using gufo::tokenization::QwenChatTemplate;
+  using gufo::tokenization::QwenTemplateDialect;
+  using gufo::tokenization::ResolveQwenChatOptions;
+  const gufo::tokenization::QwenTemplateTraits traits{
+      QwenTemplateDialect::kQwen35, false, true};
+  const std::vector<ChatMessage> history = {
+      {ChatRole::kUser, "Name one color."},
+      {ChatRole::kAssistant, "Red", "", "One color."},
+      {ChatRole::kUser, "Name another."},
+  };
+  const auto plain = ResolveQwenChatOptions(traits, {});
+  Expect(!plain.enable_thinking && !plain.preserve_thinking &&
+             plain.dialect == QwenTemplateDialect::kQwen35 &&
+             plain.emit_empty_system,
+         "Qwen3.5 options follow the template defaults");
+  const auto medium = QwenChatTemplate::Render(
+      history, ResolveQwenChatOptions(
+                   traits, {.effort = gufo::ReasoningEffort::kMedium}));
+  for (const auto effort :
+       {gufo::ReasoningEffort::kLow, gufo::ReasoningEffort::kXHigh,
+        gufo::ReasoningEffort::kMax}) {
+    const auto options = ResolveQwenChatOptions(
+        traits, {.enabled = true, .effort = effort, .preserve_thinking = true});
+    Expect(options.enable_thinking && !options.preserve_thinking,
+           "Qwen3.5 has no preserved thinking");
+    const auto rendered = QwenChatTemplate::Render(history, options);
+    Expect(rendered.has_value() &&
+               rendered->find("Reasoning effort") == std::string::npos &&
+               rendered->find("One color.") == std::string::npos,
+           "Qwen3.5 ignores effort and drops historical thinking");
+  }
+  Expect(medium.has_value() && medium->ends_with("<think>\n\n</think>\n\n"),
+         "Unspecified thinking follows the template default");
+
+  auto options = plain;
+  for (const auto role : {ChatRole::kSystem, ChatRole::kDeveloper}) {
+    Expect(!QwenChatTemplate::Render(
+               std::vector<ChatMessage>{{ChatRole::kUser, "Hi"},
+                                        {role, "Late instructions"}},
+               options),
+           "Qwen3.5 rejects late system/developer messages");
+  }
+  std::string error;
+  Expect(!QwenChatTemplate::Render(
+             std::vector<ChatMessage>{{ChatRole::kAssistant, "Hello"}}, options,
+             &error) &&
+             error == "No user query found in messages.",
+         "Qwen3.5 requires a user query");
+
+  // Hand-built non-string arguments fall back to their JSON text.
+  ChatMessage call{ChatRole::kAssistant, ""};
+  call.tool_calls.push_back(
+      {.name = "f",
+       .arguments = {
+           {.name = "flag", .value = "true", .is_string = false},
+           {.name = "map", .value = R"({"a":[1,null]})", .is_string = false}}});
+  const auto rendered = QwenChatTemplate::Render(
+      std::vector<ChatMessage>{{ChatRole::kUser, "Go"}, call}, options);
+  Expect(rendered.has_value() &&
+             rendered->find("<parameter=flag>\nTrue\n</parameter>") !=
+                 std::string::npos &&
+             rendered->find(R"(<parameter=map>
+{"a": [1, null]}
+</parameter>)") != std::string::npos,
+         "Qwen3.5 renders scalars with str() and containers with json.dumps");
+  options.dialect = QwenTemplateDialect::kQwen38;
+  const auto qwen38 = QwenChatTemplate::Render(
+      std::vector<ChatMessage>{{ChatRole::kUser, "Go"}, call}, options);
+  Expect(qwen38.has_value() &&
+             qwen38->find("<parameter=flag>\ntrue\n</parameter>") !=
+                 std::string::npos,
+         "Qwen3.8 keeps its JSON argument rendering");
+}
+
+void TestQwenPythonToolValues() {
+  using gufo::tokenization::QwenPythonToolValue;
+  const std::vector<std::pair<std::string_view, std::string>> cases = {
+      {"true", "True"},
+      {"false", "False"},
+      {"null", "None"},
+      {"0", "0"},
+      {"-0", "0"},
+      {"12", "12"},
+      {"-7", "-7"},
+      {"1.0", "1.0"},
+      {"-0.0", "-0.0"},
+      {"1E5", "100000.0"},
+      {"1e-5", "1e-05"},
+      {"1e16", "1e+16"},
+      {"1e15", "1000000000000000.0"},
+      {"0.0001", "0.0001"},
+      {"0.00012345", "0.00012345"},
+      {"123456789.125", "123456789.125"},
+      {"2.50", "2.5"},
+      {"1.5e300", "1.5e+300"},
+      {"5e-324", "5e-324"},
+      {"1.7976931348623157e308", "1.7976931348623157e+308"},
+      {"123456789012345678901234567890", "123456789012345678901234567890"},
+      {R"("text")", "text"},
+      {"[]", "[]"},
+      {"{}", "{}"},
+      {R"([1, true, null, 2.50, "a\"b"])", R"([1, true, null, 2.5, "a\"b"])"},
+      {R"({"b":{"c":[false]},"a":"<&>' é\u0001\u007f\t/\/"})",
+       std::string(R"({"b": {"c": [false]}, "a": "<&>' é\u0001)") + "\x7f" +
+           R"(\t//"})"},
+      {R"({"emoji":"😀"})", "{\"emoji\": \"\U0001F600\"}"},
+      {R"(  {"x" : 1 }  )", R"({"x": 1})"},
+      {"0.1", "0.1"},
+      {"100.0", "100.0"},
+      {"1e-4", "0.0001"},
+      {"9007199254740993.0", "9007199254740992.0"},
+      {"-1.25e-10", "-1.25e-10"},
+  };
+  for (const auto& [json_text, expected] : cases) {
+    const auto actual = QwenPythonToolValue(json_text);
+    if (actual != expected) {
+      std::cerr << "Python value of " << json_text << ": "
+                << actual.value_or("<invalid>") << "\n";
+    }
+    Expect(actual == expected, "Tool argument matches Python rendering");
+  }
+  for (const std::string_view invalid :
+       {"", "tru", "[1,", "01", "1.", "1e400", R"(["\ud800"])", "1 2",
+        "{\"a\":1,}", "\"\x01\""}) {
+    Expect(!QwenPythonToolValue(invalid).has_value(),
+           "Invalid or unencodable JSON has no Python rendering");
+  }
+
+  std::vector<gufo::tokenization::ChatMessage::ToolArgument> arguments = {
+      {.name = "a", .value = "1", .is_string = false},
+      {.name = "b", .value = "x"}};
+  Expect(gufo::tokenization::AssignQwenPythonToolValues(
+             R"({"a": 1.50, "b": "x"})", arguments) &&
+             arguments[0].python_value == "1.5" &&
+             arguments[1].python_value.empty(),
+         "Python renderings follow member order");
+  arguments[0].python_value.clear();
+  Expect(!gufo::tokenization::AssignQwenPythonToolValues(R"({"a": 1})",
+                                                         arguments) &&
+             !gufo::tokenization::AssignQwenPythonToolValues(
+                 R"({"b": "x", "a": 1})", arguments) &&
+             arguments[0].python_value.empty(),
+         "Mismatched members leave the arguments unchanged");
+}
+
+void TestQwenCacheIdentityFields() {
+  using gufo::tokenization::QwenCacheIdentityFields;
+  using gufo::tokenization::QwenChatTemplate;
+  using gufo::tokenization::QwenTemplateDialect;
+  // The Qwen3.8 bytes are part of existing disk-cache identities.
+  const auto qwen38 = QwenCacheIdentityFields(QwenTemplateDialect::kQwen38);
+  Expect(qwen38.model_kind == "qwen3.8" &&
+             qwen38.chat_template == "qwen38-reasoning-compiled-v3" &&
+             qwen38.reference_sha256 ==
+                 "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81"
+                 "041",
+         "Qwen3.8 cache identity fields are unchanged");
+  const auto qwen35 = QwenCacheIdentityFields(QwenTemplateDialect::kQwen35);
+  Expect(qwen35.model_kind == "qwen3.5" &&
+             qwen35.chat_template == "qwen35-compiled-v1" &&
+             qwen35.reference_sha256 ==
+                 QwenChatTemplate::Qwen35OfficialTemplateSha256(),
+         "Qwen3.5 cache identity names its renderer");
+}
 }  // namespace
 
 int main() {
@@ -599,6 +996,11 @@ int main() {
   TestChatCorpusConformance();
   TestToolRendering();
   TestToolReplayPreservesGeneratedPrefix();
+  TestQwen35TemplateClassification();
+  TestQwen35HuggingFaceGoldens();
+  TestQwen35ResolverAndRejections();
+  TestQwenPythonToolValues();
+  TestQwenCacheIdentityFields();
   std::cout << "All QwenChatTemplate tests passed successfully!\n";
   return 0;
 }

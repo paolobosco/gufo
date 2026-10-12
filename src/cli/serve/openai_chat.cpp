@@ -224,6 +224,7 @@ bool ParseArguments(std::string_view arguments,
     *error = "tool arguments must encode a JSON object";
     return false;
   }
+  const std::size_t first = out->size();
   for (const auto& [name, value] : parsed.members()) {
     out->push_back({
         .name = name,
@@ -231,6 +232,10 @@ bool ParseArguments(std::string_view arguments,
         .is_string = value.is_string(),
     });
   }
+  // Qwen3.5 renders non-string values from their original JSON text; the
+  // decoded value loses Python's int/float distinction and spacing.
+  (void)tokenization::AssignQwenPythonToolValues(
+      arguments, std::span(*out).subspan(first));
   return true;
 }
 
@@ -261,6 +266,7 @@ bool ParseMessage(const json::Value& value, tokenization::ChatMessage* message,
       return false;
     }
     message->thought = reasoning->get_str();
+    message->has_thought = true;
   }
 
   const json::Value* tool_calls = value.find("tool_calls");

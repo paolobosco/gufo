@@ -165,11 +165,13 @@ QwenGpuModel::QwenGpuModel(
     models::QwenModelWeights weights,
     std::shared_ptr<const tokenization::QwenTokenizer> tokenizer,
     std::vector<QwenGpuWeightRegion> weight_regions,
+    tokenization::QwenTemplateTraits template_traits,
     std::shared_ptr<models::qwen::vision::Encoder> vision)
     : reader_(std::move(reader)),
       weights_(std::move(weights)),
       tokenizer_(std::move(tokenizer)),
       weight_regions_(std::move(weight_regions)),
+      template_traits_(template_traits),
       vision_(std::move(vision)) {}
 
 QwenGpuModel::~QwenGpuModel() {
@@ -197,8 +199,14 @@ std::shared_ptr<const QwenGpuModel> QwenGpuModel::CreateFromGguf(
     return nullptr;
   }
 
-  if (!tokenization::QwenChatTemplate::ValidateGgufTemplate(*reader,
-                                                            error_msg)) {
+  // Rejects unpinned Qwen3.8 templates and classifies every other template.
+  std::string template_note;
+  const auto chat_template =
+      tokenization::QwenChatTemplate::CreateFromGguf(*reader, &template_note);
+  if (chat_template == nullptr) {
+    if (error_msg != nullptr) {
+      *error_msg = std::move(template_note);
+    }
     return nullptr;
   }
 
@@ -246,7 +254,7 @@ std::shared_ptr<const QwenGpuModel> QwenGpuModel::CreateFromGguf(
       std::move(tokenizer));
   return std::make_shared<const QwenGpuModel>(
       std::move(reader), std::move(*weights_opt), std::move(shared_tokenizer),
-      std::move(weight_regions), std::move(vision));
+      std::move(weight_regions), chat_template->Traits(), std::move(vision));
 }
 
 std::unique_ptr<QwenGpuExecutor> QwenGpuExecutor::Create(

@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "src/core/model_config.hpp"
+#include "src/models/qwen/chat_template.hpp"
 #include "src/models/qwen/forward.hpp"
 #include "src/models/qwen/generator.hpp"
 #include "src/models/qwen/state.hpp"
@@ -78,6 +79,7 @@ public:
                models::QwenModelWeights weights,
                std::shared_ptr<const tokenization::QwenTokenizer> tokenizer,
                std::vector<QwenGpuWeightRegion> weight_regions,
+               tokenization::QwenTemplateTraits template_traits,
                std::shared_ptr<models::qwen::vision::Encoder> vision = {});
   ~QwenGpuModel();
 
@@ -105,6 +107,11 @@ public:
   [[nodiscard]] const core::ModelConfig& GetConfig() const noexcept {
     return weights_.config;
   }
+  /// Chat-template rules recognized from the GGUF artifact.
+  [[nodiscard]] const tokenization::QwenTemplateTraits& GetTemplateTraits()
+      const noexcept {
+    return template_traits_;
+  }
   [[nodiscard]] std::size_t GetWeightRegionCount() const noexcept {
     return weight_regions_.size();
   }
@@ -117,6 +124,7 @@ private:
   models::QwenModelWeights weights_;
   std::shared_ptr<const tokenization::QwenTokenizer> tokenizer_;
   std::vector<QwenGpuWeightRegion> weight_regions_;
+  tokenization::QwenTemplateTraits template_traits_;
   std::shared_ptr<models::qwen::vision::Encoder> vision_;
 };
 

@@ -80,8 +80,9 @@ void CheckFlashIncrementalOracle(
   const auto prompt = std::make_shared<models::qwen::vision::Prompt>(
       models::qwen::vision::Prepare(
           model->tokenizer(), request.messages, {},
-          tokenization::ResolveQwenChatOptions(request.reasoning,
-                                               request.add_vision_id),
+          tokenization::ResolveQwenChatOptions(
+              tokenization::kQwen38TemplateTraits, request.reasoning,
+              request.add_vision_id),
           model->VisionEncoder()->identity(), model->MaxContext()));
   const std::vector<std::int32_t> tokens(prompt->tokens.begin(),
                                          prompt->tokens.end());
@@ -147,19 +148,27 @@ void CheckQwenIncrementalOracle(
   const auto prompt = std::make_shared<models::qwen::vision::Prompt>(
       models::qwen::vision::Prepare(
           model->GetTokenizer(), request.messages, {},
-          tokenization::ResolveQwenChatOptions(request.reasoning,
+          tokenization::ResolveQwenChatOptions(model->GetTemplateTraits(),
+                                               request.reasoning,
                                                request.add_vision_id),
           model->VisionEncoder()->identity(), 1024));
   hip::QwenGpuExecutor incremental(model, 1024);
   incremental.ConfigureVision(prompt, model->VisionEncoder());
   const auto tokens = std::span(prompt->tokens);
-  // Replay the same execution history: the retained reply used decode
-  // arithmetic, not matrix prefill. The separate cold comparison below
-  // deliberately continues to check that stronger guarantee.
-  (void)incremental.ForwardPromptBatch(tokens.first(previous.prompt_tokens));
-  for (std::size_t i = previous.prompt_tokens; i < cached.cached_prompt_tokens;
-       ++i)
-    (void)incremental.ForwardToken(tokens[i], i);
+  if (cached.cached_prompt_tokens < previous.prompt_tokens) {
+    // Qwen3.5 reuses only the stable prefix before the generation suffix:
+    // the server prefilled up to that boundary and continued from there.
+    (void)incremental.ForwardPromptBatch(
+        tokens.first(cached.cached_prompt_tokens));
+  } else {
+    // Replay the same execution history: the retained reply used decode
+    // arithmetic, not matrix prefill. The separate cold comparison below
+    // deliberately continues to check that stronger guarantee.
+    (void)incremental.ForwardPromptBatch(tokens.first(previous.prompt_tokens));
+    for (std::size_t i = previous.prompt_tokens;
+         i < cached.cached_prompt_tokens; ++i)
+      (void)incremental.ForwardToken(tokens[i], i);
+  }
   auto next = incremental.ForwardPromptBatch(
       tokens.subspan(cached.cached_prompt_tokens), cached.cached_prompt_tokens);
   std::vector<tokenization::TokenId> generated;
@@ -188,6 +197,21 @@ void CheckQwenIncrementalOracle(
   const auto cold_logits = incremental.CopyLastLogits();
   Require(std::ranges::equal(expected, cold_logits),
           "Qwen image prefill logits changed with chunk boundaries");
+}
+// Without preserved thinking (Qwen3.5) or with tools, the server caches the
+// prompt only before the generation suffix and prefills that suffix again.
+std::size_t StableSuffixTokens(const tokenization::QwenTokenizer& tokenizer,
+                               const tokenization::QwenTemplateTraits& traits,
+                               const server::ChatRequest& request) {
+  const auto options = tokenization::ResolveQwenChatOptions(
+      traits, request.reasoning, request.add_vision_id);
+  if (options.preserve_thinking && request.tools.empty())
+    return 0;
+  return tokenizer
+      .Encode(
+          tokenization::GenerationPrompt(options.enable_thinking),
+          {.add_bos = false, .add_eos = false, .parse_special_tokens = true})
+      .size();
 }
 }  // namespace
 
@@ -224,12 +248,21 @@ int main(int argc, char** argv) {
           &error);
       Require(qfn != nullptr && qfn->VisionEncoder() != nullptr, error);
     } else {
-      auto encoder = models::qwen::vision::Encoder::Open(model_path, {}, 5120);
+      const auto width =
+          reader->GetMetadataUint64("qwen35.embedding_length").value_or(0);
+      auto encoder = models::qwen::vision::Encoder::Open(
+          model_path, {}, static_cast<std::uint32_t>(width));
       Require(encoder != nullptr, "missing vision sidecar");
       qwen =
           hip::QwenGpuModel::CreateFromGguf(reader, &error, std::move(encoder));
       Require(qwen != nullptr, error);
     }
+    const auto& tokenizer = flash ? qfn->tokenizer() : qwen->GetTokenizer();
+    const auto traits =
+        flash ? tokenization::kQwen38TemplateTraits : qwen->GetTemplateTraits();
+    const auto suffix = [&](const server::ChatRequest& request) {
+      return StableSuffixTokens(tokenizer, traits, request);
+    };
     const auto load = [&](bool use_spec,
                           const server::TextDiskCacheConfig& cache = {}) {
       auto backend = std::make_unique<Backend>();
@@ -269,7 +302,8 @@ int main(int argc, char** argv) {
         Require(!references[i].cache_hit,
                 "different images shared a token-only cache entry");
         const auto replay = ar->chat(requests[i], 16, greedy);
-        Require(replay.cache_hit && replay.prefill_tokens == 0 &&
+        Require(replay.cache_hit &&
+                    replay.prefill_tokens == suffix(requests[i]) &&
                     replay.tokens == references[i].tokens,
                 "image prefix replay is not exact");
         std::cout << "AR " << i << ": " << references[i].text << '\n';
@@ -325,7 +359,8 @@ int main(int argc, char** argv) {
           Require(cancelled.cancelled,
                   "image cancellation fixture did not interrupt generation");
           const auto resumed = backend->chat(interrupted, 8, sampling);
-          Require(resumed.cache_hit && resumed.prefill_tokens == 0 &&
+          Require(resumed.cache_hit &&
+                      resumed.prefill_tokens == suffix(interrupted) &&
                       resumed.tokens == expected.tokens,
                   "cancelled image request lost its exact reusable frontier");
         }
@@ -433,7 +468,8 @@ int main(int argc, char** argv) {
         auto replay = load(use_spec, cache);
         for (const auto i : {0U, 1U}) {
           const auto result = replay->chat(requests[i], 16, sampled);
-          Require(result.cache_disk_hit && result.prefill_tokens == 0 &&
+          Require(result.cache_disk_hit &&
+                      result.prefill_tokens == suffix(requests[i]) &&
                       result.tokens ==
                           (i == 0 ? sampled_red.tokens : sampled_blue.tokens),
                   "disk-restored sampled image replay differs");
@@ -447,13 +483,17 @@ int main(int argc, char** argv) {
                   << " prefill=" << result.prefill_tokens << " exact="
                   << (result.tokens == (i == 0 ? red.tokens : blue.tokens))
                   << '\n';
-        Require(result.cache_disk_hit && result.prefill_tokens == 0 &&
+        Require(result.cache_disk_hit &&
+                    result.prefill_tokens == suffix(requests[i]) &&
                     result.tokens == (i == 0 ? red.tokens : blue.tokens),
                 "disk-restored image state or identity differs");
       }
       const auto result = restored->chat(continuation, 16, greedy);
-      Require(result.cached_prompt_tokens > red.prompt_tokens,
-              "continued image check must reuse generated history");
+      const auto stable = suffix(requests[0]);
+      Require(stable == 0
+                  ? result.cached_prompt_tokens > red.prompt_tokens
+                  : result.cached_prompt_tokens >= red.prompt_tokens - stable,
+              "continued image check must reuse its cached prefix");
       if (!flash)
         CheckQwenIncrementalOracle(qwen, continuation, red, result);
       if (flash || !disk_only)

@@ -1006,6 +1006,42 @@ void TestAssistantReasoningContentReachesBackend() {
       "Assistant reasoning_content reaches the model template");
   Expect(backend.last_request.messages[1].content == "Red",
          "Assistant visible content remains separate from reasoning");
+  Expect(backend.last_request.messages[1].has_thought &&
+             !backend.last_request.messages[0].has_thought,
+         "Supplied reasoning_content is distinguishable from an absent one");
+}
+
+void TestQwen35ToolArgumentsKeepPythonForm() {
+  FakeBackend backend;
+  backend.pieces = {"Done"};
+  const auto response = gufo::server::HandleOpenAiChat(Request(R"({
+        "model":"test-model",
+        "messages":[
+          {"role":"user","content":"Call it."},
+          {"role":"assistant","content":"","reasoning_content":"",
+           "tool_calls":[{"id":"c1","type":"function","function":{
+             "name":"typed","arguments":
+             "{\"f\": 1.0, \"e\": 1E5, \"b\": false, \"n\": null, \"s\": \"x\", \"o\": {\"k\":[2.50,true]}}"}}]},
+          {"role":"tool","tool_call_id":"c1","content":"ok"}
+        ],
+        "max_tokens":1
+      })"),
+                                                       backend);
+  Expect(response.status == 200, "Typed tool history is accepted");
+  const auto& message = backend.last_request.messages[1];
+  Expect(message.has_thought && message.tool_calls.size() == 1,
+         "Assistant tool call reaches the backend");
+  const auto& arguments = message.tool_calls.front().arguments;
+  const std::vector<std::string_view> python = {
+      "1.0", "100000.0", "False", "None", "", R"({"k": [2.5, true]})"};
+  Expect(arguments.size() == python.size(), "Every argument is retained");
+  for (std::size_t index = 0; index < python.size(); ++index) {
+    Expect(arguments[index].python_value == python[index],
+           "Qwen3.5 argument text follows Python str/json.dumps");
+  }
+  Expect(arguments[0].value == "1" && arguments[4].value == "x" &&
+             arguments[4].is_string,
+         "Decoded argument values are unchanged for other templates");
 }
 
 void TestPiReasoningControlsAndOutputFraming() {
@@ -1574,6 +1610,7 @@ int main() {
   TestAllSamplingControlsReachBackend();
   TestUnsupportedSamplingControlsAreRejected();
   TestAssistantReasoningContentReachesBackend();
+  TestQwen35ToolArgumentsKeepPythonForm();
   TestPiReasoningControlsAndOutputFraming();
   TestPiNativeDeepSeekThinkingObject();
   TestStreamingPromptOpenedReasoning();

@@ -178,5 +178,919 @@
         "token_count": 107
       }
     }
+  },
+  "qwen35": {
+    "generator": "tools/qwen35_9b/chat_template_goldens.py",
+    "renderer": "jinja2 3.1.6 transformers apply_chat_template environment",
+    "templates": {
+      "official": {
+        "repo": "Qwen/Qwen3.5-9B",
+        "template_sha256": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715"
+      },
+      "gguf": {
+        "repo": "unsloth/Qwen3.5-9B-GGUF",
+        "revision": "3885219b6810b007914f3a7950a8d1b469d598a5",
+        "template_sha256": "7f0e529032c25183bcd66c7f238da2d377f43be754a94e2725a58c4e16d2ed67"
+      },
+      "unsloth": {
+        "repo": "unsloth/Qwen3.5-9B-MTP-GGUF",
+        "template_sha256": "8452ca85cb1e0ff04304c02f417a53305d5ba17f6eb9d5693343ad8355f985a8"
+      }
+    },
+    "cases": {
+      "official.basic": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "rendered_sha256": "c2ba928ee33190de9d2bbb82fb68dfaed38a4ee345dcf675a3bc27f112f45b05"
+      },
+      "gguf.basic": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "rendered_sha256": "323dbd5987839260d0dd3350d815ab3b5cdffe3c0a33b467c3579fe202e990f7"
+      },
+      "unsloth.basic": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "rendered_sha256": "c2ba928ee33190de9d2bbb82fb68dfaed38a4ee345dcf675a3bc27f112f45b05"
+      },
+      "official.thinking_on": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "c2ba928ee33190de9d2bbb82fb68dfaed38a4ee345dcf675a3bc27f112f45b05"
+      },
+      "gguf.thinking_on": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "c2ba928ee33190de9d2bbb82fb68dfaed38a4ee345dcf675a3bc27f112f45b05"
+      },
+      "unsloth.thinking_on": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "c2ba928ee33190de9d2bbb82fb68dfaed38a4ee345dcf675a3bc27f112f45b05"
+      },
+      "official.thinking_off": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "enable_thinking": false,
+        "rendered_sha256": "323dbd5987839260d0dd3350d815ab3b5cdffe3c0a33b467c3579fe202e990f7"
+      },
+      "gguf.thinking_off": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "enable_thinking": false,
+        "rendered_sha256": "323dbd5987839260d0dd3350d815ab3b5cdffe3c0a33b467c3579fe202e990f7"
+      },
+      "unsloth.thinking_off": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          }
+        ],
+        "enable_thinking": false,
+        "rendered_sha256": "323dbd5987839260d0dd3350d815ab3b5cdffe3c0a33b467c3579fe202e990f7"
+      },
+      "official.system": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "system",
+            "content": "  Be concise.\n"
+          },
+          {
+            "role": "user",
+            "content": "Hi"
+          }
+        ],
+        "rendered_sha256": "ca6a6c6fb86de5b196791d9af64df802d82239b06d467c13b39b4fa9d37b089c"
+      },
+      "gguf.system": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "system",
+            "content": "  Be concise.\n"
+          },
+          {
+            "role": "user",
+            "content": "Hi"
+          }
+        ],
+        "rendered_sha256": "095fdb652902f74bd685cce114ba89c7d3db0be957cc21f48f406ef53496f473"
+      },
+      "official.empty_system": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "system",
+            "content": ""
+          },
+          {
+            "role": "user",
+            "content": "Hi"
+          }
+        ],
+        "rendered_sha256": "5ede607edaf6e602caa126f8dfea57b745ab14326530f7f198bf8eeb5b4a720d"
+      },
+      "gguf.empty_system": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "system",
+            "content": ""
+          },
+          {
+            "role": "user",
+            "content": "Hi"
+          }
+        ],
+        "rendered_sha256": "367d82aa0a5f24372253f1a2022adbc6c25758da078492dbb121fb4a8a29533c"
+      },
+      "unsloth.empty_system": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "system",
+            "content": ""
+          },
+          {
+            "role": "user",
+            "content": "Hi"
+          }
+        ],
+        "rendered_sha256": "7562ba8388193b82d95953831c2d4d61f85796a9ea065d8d3e3db7b30d9a9447"
+      },
+      "official.blank_system": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "system",
+            "content": " \n\t"
+          },
+          {
+            "role": "user",
+            "content": "Hi"
+          }
+        ],
+        "rendered_sha256": "5ede607edaf6e602caa126f8dfea57b745ab14326530f7f198bf8eeb5b4a720d"
+      },
+      "unsloth.blank_system": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "system",
+            "content": " \n\t"
+          },
+          {
+            "role": "user",
+            "content": "Hi"
+          }
+        ],
+        "rendered_sha256": "7562ba8388193b82d95953831c2d4d61f85796a9ea065d8d3e3db7b30d9a9447"
+      },
+      "official.empty_system_tools": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "system",
+            "content": ""
+          },
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "rendered_sha256": "d6c9e20cfa08307e2c6a7d8aa88da3f1fe86811200ead2d0c6ca769a0b8bc7c7"
+      },
+      "unsloth.empty_system_tools": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "system",
+            "content": ""
+          },
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "rendered_sha256": "d6c9e20cfa08307e2c6a7d8aa88da3f1fe86811200ead2d0c6ca769a0b8bc7c7"
+      },
+      "official.system_tools": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise."
+          },
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "rendered_sha256": "8fe1a1211d4118ffd9d7c345e0284dc86d5f1333d81ad6453084b6614f0e6094"
+      },
+      "gguf.system_tools": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise."
+          },
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "rendered_sha256": "04d734b1d3c5512d93918e2573f0e8dc0b1058679ad3869e35785a7c8b15c7fd"
+      },
+      "unsloth.system_tools": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise."
+          },
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "rendered_sha256": "8fe1a1211d4118ffd9d7c345e0284dc86d5f1333d81ad6453084b6614f0e6094"
+      },
+      "unsloth.developer": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "developer",
+            "content": "Use metric units."
+          },
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "rendered_sha256": "5fedb48b0afd97f810fb57b313e0a0121adf932eaccdc4c426f2dcbecb91fe57"
+      },
+      "unsloth.system_developer": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Be concise."
+          },
+          {
+            "role": "developer",
+            "content": "Use metric units."
+          },
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          }
+        ],
+        "rendered_sha256": "ef0ed999827a4715d4235a6be67e658487d31f7a9811b47e266c3be20b889997"
+      },
+      "official.history": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          },
+          {
+            "role": "assistant",
+            "content": "Red",
+            "reasoning_content": "I should answer with one color."
+          },
+          {
+            "role": "user",
+            "content": "Name another."
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "ea0dc42bc76d66bb38fab09250bcf72f63c3bb1ec7098403a77a8c6452add6a5"
+      },
+      "gguf.history": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Name one color."
+          },
+          {
+            "role": "assistant",
+            "content": "Red",
+            "reasoning_content": "I should answer with one color."
+          },
+          {
+            "role": "user",
+            "content": "Name another."
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "ea0dc42bc76d66bb38fab09250bcf72f63c3bb1ec7098403a77a8c6452add6a5"
+      },
+      "official.tool_loop": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "Use the tool.",
+            "tool_calls": [
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Rome\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "21 C"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "a0df7357ed9471b90c74f3b88f76bc36a850db4e3a372811fda87c46ace761c8"
+      },
+      "gguf.tool_loop": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "Use the tool.",
+            "tool_calls": [
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Rome\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "21 C"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "a0df7357ed9471b90c74f3b88f76bc36a850db4e3a372811fda87c46ace761c8"
+      },
+      "unsloth.tool_loop": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Weather in Rome?"
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "Use the tool.",
+            "tool_calls": [
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Rome\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "21 C"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "a0df7357ed9471b90c74f3b88f76bc36a850db4e3a372811fda87c46ace761c8"
+      },
+      "official.parallel_tools": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Weather in Rome and Oslo?"
+          },
+          {
+            "role": "assistant",
+            "content": "Checking both.",
+            "reasoning_content": "",
+            "tool_calls": [
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Rome\"}"
+              },
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Oslo\", \"days\": 2}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "21 C"
+          },
+          {
+            "role": "tool",
+            "content": " 4 C\n"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Temperature <°C> & 'wind' in a city",
+              "parameters": {
+                "type": "object",
+                "required": [
+                  "city"
+                ],
+                "properties": {
+                  "city": {
+                    "type": "string"
+                  },
+                  "days": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "rendered_sha256": "a239322e46af28da10f2e5d045ef3f3a9bfb0ca6bae3853ef34b998e571f721f"
+      },
+      "official.inline_think": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "First?"
+          },
+          {
+            "role": "assistant",
+            "content": "<think>\nold\n</think>\n\nA1"
+          },
+          {
+            "role": "user",
+            "content": "Second?"
+          },
+          {
+            "role": "assistant",
+            "content": "text <think>r</think>  ans",
+            "tool_calls": [
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Rome\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "21 C"
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "c2b6a7555cc0308a9f0ad4aa86f8346099810887e0cb0b192a7e8e699e2aa0f6"
+      },
+      "gguf.inline_think": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "user",
+            "content": "First?"
+          },
+          {
+            "role": "assistant",
+            "content": "<think>\nold\n</think>\n\nA1"
+          },
+          {
+            "role": "user",
+            "content": "Second?"
+          },
+          {
+            "role": "assistant",
+            "content": "text <think>r</think>  ans",
+            "tool_calls": [
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Rome\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "21 C"
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "c2b6a7555cc0308a9f0ad4aa86f8346099810887e0cb0b192a7e8e699e2aa0f6"
+      },
+      "official.reasoning_empty": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Second?"
+          },
+          {
+            "role": "assistant",
+            "content": "text <think>r</think>  ans",
+            "reasoning_content": "",
+            "tool_calls": [
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Rome\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "21 C"
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "999562741e57bce49170198ac876f8b33a196418a96f82ec256de2e81e5da352"
+      },
+      "official.reasoning_newline": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Second?"
+          },
+          {
+            "role": "assistant",
+            "content": "text <think>r</think>  ans",
+            "reasoning_content": "\n",
+            "tool_calls": [
+              {
+                "name": "get_weather",
+                "arguments": "{\"city\": \"Rome\"}"
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "21 C"
+          }
+        ],
+        "enable_thinking": true,
+        "rendered_sha256": "999562741e57bce49170198ac876f8b33a196418a96f82ec256de2e81e5da352"
+      },
+      "official.typed_arguments": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Call it."
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "name": "typed",
+                "arguments": "{\"b\": true, \"n\": null, \"f\": 1.0, \"e\": 1E5, \"small\": 1e-5, \"big\": 1e16, \"tiny\": 0.0001, \"i\": 100000, \"huge\": 123456789012345678901234567890, \"neg0\": -0, \"negf\": -0.0, \"frac\": 2.50, \"obj\": {\"x\": [1, true, null, 2.50], \"s\": \"<&>' \\u00e9\\n\"}, \"arr\": [], \"str\": \"plain\"}"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "Again."
+          }
+        ],
+        "rendered_sha256": "763b7820de8ca7295b276001b2d33fcabbcddcb3baf785b132f44f7ee55961c4"
+      },
+      "gguf.typed_arguments": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Call it."
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "name": "typed",
+                "arguments": "{\"b\": true, \"n\": null, \"f\": 1.0, \"e\": 1E5, \"small\": 1e-5, \"big\": 1e16, \"tiny\": 0.0001, \"i\": 100000, \"huge\": 123456789012345678901234567890, \"neg0\": -0, \"negf\": -0.0, \"frac\": 2.50, \"obj\": {\"x\": [1, true, null, 2.50], \"s\": \"<&>' \\u00e9\\n\"}, \"arr\": [], \"str\": \"plain\"}"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "Again."
+          }
+        ],
+        "rendered_sha256": "b82baebd23b7336a126b6e84cbf4c71860ce9d3624d7706770ff0c14641676d7"
+      },
+      "unsloth.typed_arguments": {
+        "template": "unsloth",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Call it."
+          },
+          {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+              {
+                "name": "typed",
+                "arguments": "{\"b\": true, \"n\": null, \"f\": 1.0, \"e\": 1E5, \"small\": 1e-5, \"big\": 1e16, \"tiny\": 0.0001, \"i\": 100000, \"huge\": 123456789012345678901234567890, \"neg0\": -0, \"negf\": -0.0, \"frac\": 2.50, \"obj\": {\"x\": [1, true, null, 2.50], \"s\": \"<&>' \\u00e9\\n\"}, \"arr\": [], \"str\": \"plain\"}"
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": "Again."
+          }
+        ],
+        "rendered_sha256": "763b7820de8ca7295b276001b2d33fcabbcddcb3baf785b132f44f7ee55961c4"
+      },
+      "official.vision": {
+        "template": "official",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Describe.",
+            "image_offsets": [
+              0
+            ]
+          }
+        ],
+        "rendered_sha256": "b66fd62ab88d5359192e10c69027042ebf200c15190114bd505052d4b9313289"
+      },
+      "gguf.vision": {
+        "template": "gguf",
+        "messages": [
+          {
+            "role": "user",
+            "content": "Describe.",
+            "image_offsets": [
+              0
+            ]
+          }
+        ],
+        "rendered_sha256": "98bea31be87551bbe37d75413999b382e13378f67ee12ac818ecc01221ac3875"
+      }
+    }
   }
 }

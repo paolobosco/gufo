@@ -57,8 +57,10 @@ struct QwenImageContext final : TextPromptContext {
   std::shared_ptr<const models::qwen::vision::Prompt> prompt;
 };
 
-tokenization::ChatTemplateOptions QwenChatOptions(const ChatRequest& request) {
-  auto options = tokenization::ResolveQwenChatOptions(request.reasoning,
+tokenization::ChatTemplateOptions QwenChatOptions(
+    const ChatRequest& request,
+    const tokenization::QwenTemplateTraits& traits) {
+  auto options = tokenization::ResolveQwenChatOptions(traits, request.reasoning,
                                                       request.add_vision_id);
   options.require_tool_call =
       request.tool_choice == ChatRequest::ToolChoice::kRequired;
@@ -76,10 +78,10 @@ std::size_t StablePromptPrefix(std::span<const TextRunnerToken> tokens,
 TextPreparedPrompt PrepareQwenPrompt(
     const ChatRequest& request, const tokenization::QwenTokenizer& tokenizer,
     const std::shared_ptr<models::qwen::vision::Encoder>& encoder,
-    std::uint32_t max_context) {
+    std::uint32_t max_context, const tokenization::QwenTemplateTraits& traits) {
   const bool has_images = std::ranges::any_of(
       request.messages, [](const auto& m) { return !m.images.empty(); });
-  const auto options = QwenChatOptions(request);
+  const auto options = QwenChatOptions(request, traits);
   auto prompt = std::make_shared<models::qwen::vision::Prompt>(
       models::qwen::vision::Prepare(
           tokenizer, request.messages,
@@ -238,7 +240,8 @@ std::vector<std::uint8_t> QwenCompatibilityIdentity(
     std::string_view artifact_fingerprint,
     std::string_view draft_artifact_fingerprint, std::uint32_t max_context,
     const hip::QwenExecutionPolicy& execution_policy, bool speculative,
-    const speculative::SpeculativeOptions& speculative_options) {
+    const speculative::SpeculativeOptions& speculative_options,
+    tokenization::QwenTemplateDialect dialect) {
   if (!IsSha256Hex(artifact_fingerprint)) {
     throw std::invalid_argument(
         "Qwen disk cache requires an artifact fingerprint");
@@ -250,15 +253,16 @@ std::vector<std::uint8_t> QwenCompatibilityIdentity(
   const std::string_view state_abi =
       QwenStateAbi(speculative, execution_policy.UsesFp16AttentionKv(),
                    execution_policy.UsesBf16RecurrentState());
+  const auto template_identity = tokenization::QwenCacheIdentityFields(dialect);
   std::ostringstream identity;
   identity << "schema=gufo-text-continuation-v2\n"
-           << "model_kind=qwen3.8\n"
+           << "model_kind=" << template_identity.model_kind << '\n'
            << "artifact_id=" << core::kGgufIdentityScheme << ':'
            << artifact_fingerprint << '\n'
            << "tokenizer=embedded-in-artifact\n"
-           << "chat_template=qwen38-reasoning-compiled-v3\n"
+           << "chat_template=" << template_identity.chat_template << '\n'
            << "chat_template_reference_sha256="
-           << tokenization::QwenChatTemplate::OfficialTemplateSha256() << '\n'
+           << template_identity.reference_sha256 << '\n'
            << "state_abi=" << state_abi << '\n'
            << "payload_layout=qwen-gfx1151-live-prefix-v3\n"
            << "numerics=qwen-bf16-fp32-prefill-v1\n"
@@ -805,7 +809,8 @@ public:
       persistence_ = TextRunnerPersistenceDescriptor{
           .compatibility_identity = QwenCompatibilityIdentity(
               artifact_fingerprint, draft_artifact_fingerprint, max_context_,
-              execution_policy_, speculative, speculative_options_),
+              execution_policy_, speculative, speculative_options_,
+              model_->GetTemplateTraits().dialect),
           .payload_version = kQwenPersistentPayloadVersion,
       };
     }
@@ -894,13 +899,14 @@ public:
         request.tool_choice == ChatRequest::ToolChoice::kNone
             ? std::span<const tokenization::ChatTool>{}
             : std::span<const tokenization::ChatTool>{request.tools},
-        QwenChatOptions(request));
+        QwenChatOptions(request, model_->GetTemplateTraits()));
   }
 
   [[nodiscard]] std::optional<TextPreparedPrompt> PreparePrompt(
       const ChatRequest& request) const override {
     return PrepareQwenPrompt(request, model_->GetTokenizer(),
-                             model_->VisionEncoder(), max_context_);
+                             model_->VisionEncoder(), max_context_,
+                             model_->GetTemplateTraits());
   }
 
   void SetPromptContext(
@@ -912,7 +918,7 @@ public:
 
   [[nodiscard]] TextGenerationBackend::InitialOutputState InitialOutputState(
       const ChatRequest& request) const override {
-    return QwenChatOptions(request).enable_thinking
+    return QwenChatOptions(request, model_->GetTemplateTraits()).enable_thinking
                ? TextGenerationBackend::InitialOutputState::kReasoning
                : TextGenerationBackend::InitialOutputState::kContent;
   }
@@ -2357,13 +2363,14 @@ public:
         request.tool_choice == ChatRequest::ToolChoice::kNone
             ? std::span<const tokenization::ChatTool>{}
             : std::span<const tokenization::ChatTool>{request.tools},
-        QwenChatOptions(request));
+        QwenChatOptions(request, tokenization::kQwen38TemplateTraits));
   }
 
   [[nodiscard]] std::optional<TextPreparedPrompt> PreparePrompt(
       const ChatRequest& request) const override {
     return PrepareQwenPrompt(request, model_->tokenizer(),
-                             model_->VisionEncoder(), max_context_);
+                             model_->VisionEncoder(), max_context_,
+                             tokenization::kQwen38TemplateTraits);
   }
 
   void SetPromptContext(
@@ -2375,7 +2382,8 @@ public:
 
   [[nodiscard]] TextGenerationBackend::InitialOutputState InitialOutputState(
       const ChatRequest& request) const override {
-    return QwenChatOptions(request).enable_thinking
+    return QwenChatOptions(request, tokenization::kQwen38TemplateTraits)
+                   .enable_thinking
                ? TextGenerationBackend::InitialOutputState::kReasoning
                : TextGenerationBackend::InitialOutputState::kContent;
   }

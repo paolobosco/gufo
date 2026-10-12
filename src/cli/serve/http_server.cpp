@@ -446,6 +446,7 @@ bool ReadTextMessages(const json::Value* input,
         return false;
       tokenization::ChatMessage reasoning;
       reasoning.role = tokenization::ChatRole::kAssistant;
+      reasoning.has_thought = true;
       for (const auto& part : summary->items()) {
         const auto* text = part.find("text");
         if (part.member_str("type") != "summary_text" || text == nullptr ||

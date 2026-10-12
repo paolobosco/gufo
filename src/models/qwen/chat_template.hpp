@@ -55,6 +55,9 @@ struct ChatMessage {
   std::string content;
   std::string name;     ///< Optional function/tool name
   std::string thought;  ///< Optional thinking/reasoning prefix
+  /// The client supplied reasoning, possibly empty. Qwen3.5 extracts
+  /// reasoning from `</think>` in the content only when it did not.
+  bool has_thought{false};
   std::string tool_call_id;
   struct ImagePart {
     /// Insert an image before this byte of content. Equal offsets preserve
@@ -68,6 +71,9 @@ struct ChatMessage {
     std::string name;
     std::string value;
     bool is_string{true};
+    /// Qwen3.5 rendering of a non-string value: Python `str()` for scalars,
+    /// `json.dumps` for objects and arrays. Empty when unknown.
+    std::string python_value{};
   };
 
   struct ToolCall {
@@ -93,6 +99,25 @@ enum class QwenReasoningEffort : std::uint8_t {
   kXHigh,
 };
 
+/// Template family whose rendering rules the compiled formatter follows.
+enum class QwenTemplateDialect : std::uint8_t {
+  /// Reasoning-effort instructions and optionally preserved thinking.
+  kQwen38,
+  /// No effort levels; historical thinking only after the last user query.
+  kQwen35,
+};
+
+/// Defaults prescribed by the template recognized in a GGUF artifact.
+struct QwenTemplateTraits {
+  QwenTemplateDialect dialect{QwenTemplateDialect::kQwen38};
+  /// Thinking state when a request leaves it unspecified.
+  bool default_enable_thinking{true};
+  /// Open a system turn for an empty leading system message without tools.
+  bool emit_empty_system{false};
+};
+
+inline constexpr QwenTemplateTraits kQwen38TemplateTraits{};
+
 /// Formatting options for rendering a conversation into a text prompt.
 struct ChatTemplateOptions {
   bool add_generation_prompt{true};
@@ -101,16 +126,42 @@ struct ChatTemplateOptions {
   bool preserve_thinking{true};
   bool add_vision_id{false};
   bool require_tool_call{false};
+  QwenTemplateDialect dialect{QwenTemplateDialect::kQwen38};
+  bool emit_empty_system{false};
   std::size_t max_output_bytes{1024ULL * 1024ULL};  ///< 1 MiB upper bound
 };
 
 /// Suffix opened for a new assistant turn, outside the stable conversation.
 [[nodiscard]] std::string_view GenerationPrompt(bool enable_thinking);
 
-/// Resolve CLI/API controls against the official Qwen3.8 template defaults.
-/// Provider-neutral minimal/high/max map to native low/xhigh/xhigh.
+/// Resolve CLI/API controls against the artifact template's defaults.
+/// Qwen3.8 maps provider-neutral minimal/high/max to native low/xhigh/xhigh.
+/// Qwen3.5 has no effort levels or preserved thinking, so both are ignored.
 [[nodiscard]] ChatTemplateOptions ResolveQwenChatOptions(
-    const ReasoningOptions& reasoning, bool add_vision_id = false);
+    const QwenTemplateTraits& traits, const ReasoningOptions& reasoning,
+    bool add_vision_id = false);
+
+/// Qwen3.5 tool-argument text for one complete non-string JSON value: Python
+/// `str()` for scalars and `json.dumps(..., ensure_ascii=False)` for objects
+/// and arrays. Returns nullopt for invalid JSON or values Python cannot encode.
+[[nodiscard]] std::optional<std::string> QwenPythonToolValue(
+    std::string_view json_value);
+
+/// Fills `python_value` for the non-string members of the JSON object text
+/// `arguments_json`, which `arguments` decodes in member order. Returns false
+/// and leaves `arguments` unchanged when the members do not line up.
+bool AssignQwenPythonToolValues(std::string_view arguments_json,
+                                std::span<ChatMessage::ToolArgument> arguments);
+
+/// Template-dependent fields of the Qwen continuation-cache identity.
+struct QwenTemplateCacheIdentity {
+  std::string_view model_kind;
+  std::string_view chat_template;
+  std::string_view reference_sha256;
+};
+
+[[nodiscard]] QwenTemplateCacheIdentity QwenCacheIdentityFields(
+    QwenTemplateDialect dialect) noexcept;
 
 /// Deterministic, bounded Qwen ChatML formatter.
 class QwenChatTemplate {
@@ -118,6 +169,7 @@ public:
   enum class Profile : std::uint8_t {
     kLegacyChatMl,
     kQwen38Reasoning,
+    kQwen35,
   };
 
   ~QwenChatTemplate() = default;
@@ -149,6 +201,11 @@ public:
   }
   [[nodiscard]] Profile GetProfile() const noexcept { return profile_; }
   [[nodiscard]] std::string_view GetTemplateId() const noexcept;
+  [[nodiscard]] const QwenTemplateTraits& Traits() const noexcept {
+    return traits_;
+  }
+  /// False when the rules come from a template that is not pinned by hash.
+  [[nodiscard]] bool IsRecognized() const noexcept { return recognized_; }
 
   [[nodiscard]] static constexpr std::string_view
   OfficialTemplateSha256() noexcept {
@@ -158,6 +215,25 @@ public:
   [[nodiscard]] static constexpr std::string_view
   UnslothArtifactTemplateSha256() noexcept {
     return "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce";
+  }
+
+  /// Qwen/Qwen3.5-9B chat_template.jinja; thinking on by default.
+  [[nodiscard]] static constexpr std::string_view
+  Qwen35OfficialTemplateSha256() noexcept {
+    return "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715";
+  }
+
+  /// unsloth/Qwen3.5-9B-GGUF embedded template; thinking off by default.
+  [[nodiscard]] static constexpr std::string_view
+  Qwen35UnslothGgufTemplateSha256() noexcept {
+    return "7f0e529032c25183bcd66c7f238da2d377f43be754a94e2725a58c4e16d2ed67";
+  }
+
+  /// unsloth/Qwen3.5-9B and unsloth/Qwen3.5-9B-MTP-GGUF template; merges
+  /// leading system/developer messages and omits an empty system turn.
+  [[nodiscard]] static constexpr std::string_view
+  Qwen35UnslothTemplateSha256() noexcept {
+    return "8452ca85cb1e0ff04304c02f417a53305d5ba17f6eb9d5693343ad8355f985a8";
   }
 
   /// Formats a list of messages into a deterministic UTF-8 prompt string.
@@ -185,14 +261,19 @@ public:
 
 private:
   QwenChatTemplate(std::string template_str, std::string template_sha256,
-                   Profile profile)
+                   Profile profile, QwenTemplateTraits traits = {},
+                   bool recognized = true)
       : template_string_(std::move(template_str)),
         template_sha256_(std::move(template_sha256)),
-        profile_(profile) {}
+        profile_(profile),
+        traits_(traits),
+        recognized_(recognized) {}
 
   std::string template_string_;
   std::string template_sha256_;
   Profile profile_{Profile::kLegacyChatMl};
+  QwenTemplateTraits traits_;
+  bool recognized_{true};
 };
 
 }  // namespace gufo::tokenization
