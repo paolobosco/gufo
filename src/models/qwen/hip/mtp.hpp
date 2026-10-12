@@ -18,7 +18,7 @@
 
 namespace gufo::hip {
 
-/// Immutable GPU-visible MTP layer weights. Current GGUF K-quant matrices are
+/// Immutable GPU-visible MTP layer weights. Quantized GGUF matrices are
 /// expanded once to BF16; the tied embedding and LM head remain shared with
 /// the target model.
 class QwenMtpGpuModel final {
@@ -63,7 +63,8 @@ private:
   double pack_time_seconds_{0.0};
 };
 
-/// Mutable single-session executor for the Qwen3.8 layer-64 MTP graph.
+/// Mutable single-session executor for the Qwen MTP graph, the block stored
+/// after the target layers (blk.{num_layers}).
 class QwenMtpGpuExecutor final {
 public:
   ~QwenMtpGpuExecutor();

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "src/core/quant/ggml_dequant.hpp"
+#include "src/core/quant/ggml_gemm.hpp"
 #include "src/models/qwen/hip/mtp.hpp"
 #include "src/models/qwen/hip/mtp/detail/allocation.hpp"
 
@@ -54,23 +55,17 @@ void ReadMatrixRow(const models::QwenTensorRef& tensor, std::size_t row,
     return;
   }
 
+  // quant::Dequantize aborts on a type it does not dispatch; throw instead so
+  // QwenMtpGpuModel::Create reports the error.
+  if (!quant::IsSupported(tensor.type)) {
+    throw std::runtime_error("unsupported MTP matrix type: " +
+                             std::string(core::ToString(tensor.type)));
+  }
   const void* source = QuantizedRow(tensor, row, columns);
   if (source == nullptr) {
     throw std::runtime_error("unsupported MTP matrix quantization");
   }
-  switch (tensor.type) {
-    case core::GgmlType::kQ3_K:
-      quant::DequantizeQ3_K(source, output, columns);
-      return;
-    case core::GgmlType::kQ4_K:
-      quant::DequantizeQ4_K(source, output, columns);
-      return;
-    case core::GgmlType::kQ6_K:
-      quant::DequantizeQ6_K(source, output, columns);
-      return;
-    default:
-      throw std::runtime_error("unsupported MTP matrix type");
-  }
+  quant::Dequantize(tensor.type, source, output, columns);
 }
 
 void CopyToDevice(void* destination, const void* source, std::size_t bytes) {

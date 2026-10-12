@@ -30,8 +30,9 @@ struct QwenMtpWeights {
       const core::GgufReader& reader, std::string* error_msg = nullptr);
 };
 
-/// Stateful CPU oracle for the single Qwen3.8 MTP layer. The first call uses a
-/// target-model hidden state; subsequent calls may feed LastHidden() back in.
+/// Stateful CPU oracle for the single Qwen MTP layer (blk.{num_layers}, after
+/// the target layers). The first call uses a target-model hidden state;
+/// subsequent calls may feed LastHidden() back in.
 class QwenMtpReference final {
 public:
   [[nodiscard]] static std::unique_ptr<QwenMtpReference> Create(
