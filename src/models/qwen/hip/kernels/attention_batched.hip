@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <stdexcept>
 
 #include "src/core/hip/detail/dispatch_telemetry.hpp"
 #include "src/core/hip/hip_utils.hpp"
@@ -92,7 +93,7 @@ __global__ void BatchedAttentionKernel(
   const std::size_t kv_width =
       static_cast<std::size_t>(num_kv_heads) * head_dim;
 
-  __shared__ float s_scratch[256];
+  __shared__ float s_scratch[detail::kBatchedAttentionScratchFloats];
   extern __shared__ float s_scores[];
 
   const std::uint32_t cur_pos = start_pos + static_cast<std::uint32_t>(t);
@@ -248,6 +249,14 @@ void LaunchBatchedAttention(const float* q, const float* k, const float* v,
                             std::uint32_t num_kv_heads, std::uint32_t head_dim,
                             hipStream_t stream, bool skip_kv_write,
                             void* out_context_bf16) {
+  const std::size_t max_seq_len =
+      static_cast<std::size_t>(start_pos) + batch_size;
+  // Checked before the KV write so a rejected range leaves the cache intact;
+  // the executor rejects such prompts before any layer runs.
+  if (!detail::IsBaselinePrefillAttentionSupported(max_seq_len)) {
+    throw std::length_error(
+        "baseline prefill attention exceeds the workgroup LDS limit");
+  }
   const dim3 kv_grid(num_kv_heads, static_cast<unsigned int>(batch_size));
   if (!skip_kv_write) {
     WriteBatchedKVCacheKernel<<<kv_grid, 256, 0, stream>>>(
@@ -257,8 +266,6 @@ void LaunchBatchedAttention(const float* q, const float* k, const float* v,
   }
 
   const dim3 attn_grid(num_heads, static_cast<unsigned int>(batch_size));
-  const std::size_t max_seq_len =
-      static_cast<std::size_t>(start_pos) + batch_size;
   const std::size_t shared_scores_bytes = max_seq_len * sizeof(float);
   BatchedAttentionKernel<<<attn_grid, 256, shared_scores_bytes, stream>>>(
       q, gate, k_cache, v_cache, static_cast<const __half*>(k_cache_f16),

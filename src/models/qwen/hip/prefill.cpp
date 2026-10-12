@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include "src/models/qwen/hip/detail/attention_policy.hpp"
 #include "src/models/qwen/hip/executor.hpp"
 
 namespace gufo::hip {
@@ -12,6 +13,27 @@ tokenization::TokenId QwenGpuExecutor::ForwardPromptBatch(
   if (prompt_tokens.empty()) {
     return 0;
   }
+  // Validate the whole range before any state changes, so a rejected prompt
+  // leaves the executor exactly as it was.
+  const std::size_t end_pos =
+      static_cast<std::size_t>(start_pos) + prompt_tokens.size();
+  if (end_pos > arena_.GetMaxContext()) {
+    throw std::length_error("prompt exceeds the GPU context length");
+  }
+  const auto& config = weights_.config;
+  if (!detail::IsPrefillAttentionSupported({
+          .batch_size = prompt_tokens.size(),
+          .start_pos = start_pos,
+          .max_context = arena_.GetMaxContext(),
+          .num_heads = config.num_attention_heads,
+          .num_kv_heads = config.num_key_value_heads,
+          .head_dim = config.head_dim,
+          .has_k_cache_f16 = policy_.UsesFp16AttentionKv(),
+          .has_v_cache_f16 = policy_.UsesFp16AttentionKv(),
+      })) {
+    throw std::length_error(
+        "prompt exceeds the baseline prefill attention LDS limit");
+  }
   replaying_ssm_state_ = false;
   arena_.DisableSsmReplayCapture();
   if (capture_prompt_hidden_) {
@@ -20,12 +42,6 @@ tokenization::TokenId QwenGpuExecutor::ForwardPromptBatch(
         std::max<std::size_t>(arena_.GetTargetLayerCapture().size(), 1U);
     h_prompt_hidden_.reserve(prompt_tokens.size() * captured_layers *
                              weights_.config.hidden_size);
-  }
-
-  const std::size_t end_pos =
-      static_cast<std::size_t>(start_pos) + prompt_tokens.size();
-  if (end_pos > arena_.GetMaxContext()) {
-    throw std::length_error("prompt exceeds the GPU context length");
   }
 
   tokenization::TokenId next_token = 0;

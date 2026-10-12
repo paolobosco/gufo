@@ -79,7 +79,8 @@ void LaunchFusedQKNormRoPEKvWrite(
 /// true the KV cache is assumed already written by the fused prefill kernel
 /// (opt-c010-qk-rope-kv). When out_context_bf16 is non-null the context is also
 /// written as BF16, which saves the caller a conversion launch when the next
-/// projection consumes BF16.
+/// projection consumes BF16. Throws std::length_error, before writing the KV
+/// cache, when start_pos + batch_size scores exceed the workgroup LDS.
 void LaunchBatchedAttention(const float* q, const float* k, const float* v,
                             const float* gate, float* k_cache, float* v_cache,
                             void* k_cache_f16, void* v_cache_f16,

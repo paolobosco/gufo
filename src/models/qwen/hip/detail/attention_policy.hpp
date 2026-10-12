@@ -16,6 +16,10 @@ inline constexpr std::uint32_t kTiledAttentionHeadDim{256};
 inline constexpr std::size_t kSplitKDecodeAttentionMinContext{128};
 inline constexpr std::uint32_t kSplitKDecodeAttentionMaxSplits{32};
 inline constexpr std::uint32_t kFusedQkNormMaxHeadDim{256};
+/// Static reduction scratch of the baseline batched prefill kernel; its
+/// dynamic LDS holds one FP32 score per visible key beside it.
+inline constexpr std::size_t kBatchedAttentionScratchFloats{256};
+inline constexpr std::size_t kGfx1151MaxWorkgroupLdsBytes{65536};
 
 struct AttentionSupportParams {
   std::size_t batch_size{0};
@@ -96,6 +100,31 @@ struct AttentionSupportParams {
          static_cast<std::size_t>(params.start_pos) + params.batch_size <=
              params.max_context &&
          params.has_k_cache_f16 && params.has_v_cache_f16;
+}
+
+[[nodiscard]] constexpr std::size_t BaselinePrefillAttentionLdsBytes(
+    std::size_t visible) noexcept {
+  return (kBatchedAttentionScratchFloats + visible) * sizeof(float);
+}
+
+[[nodiscard]] constexpr bool IsBaselinePrefillAttentionSupported(
+    std::size_t visible) noexcept {
+  return BaselinePrefillAttentionLdsBytes(visible) <=
+         kGfx1151MaxWorkgroupLdsBytes;
+}
+
+/// Mirrors the prefill dispatch (WMMA, tiled from the optimized threshold,
+/// then the baseline) for a range ending at start_pos + batch_size. Only the
+/// baseline is bounded by workgroup LDS, and its largest chunk is the last,
+/// so one check over a whole prompt covers every chunk.
+[[nodiscard]] constexpr bool IsPrefillAttentionSupported(
+    const AttentionSupportParams& params) noexcept {
+  const std::size_t visible =
+      static_cast<std::size_t>(params.start_pos) + params.batch_size;
+  return IsWmmaAttentionSupported(params) ||
+         (ShouldAttemptOptimizedAttention(visible) &&
+          IsTiledAttentionSupported(params)) ||
+         IsBaselinePrefillAttentionSupported(visible);
 }
 
 /// The row-split recurrence needs two scratch planes and a 128 x 128 state
