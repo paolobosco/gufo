@@ -961,12 +961,22 @@ std::optional<ModelConfig> GgufReader::ExtractModelConfig(
   }
 
   // 3. MTP speculative layers are included in qwen35.block_count but are not
-  // part of the main autoregressive transformer stack.
+  // part of the main autoregressive transformer stack. Without the explicit
+  // key, a trailing blk.{block_count-1}.nextn.* block is the one MTP layer.
   const auto embedded_mtp_layers =
       GetMetadataUint32(prefix + "nextn_predict_layers");
   config.mtp_num_layers =
       embedded_mtp_layers.value_or(HasMtpTensors() ? 1U : 0U);
-  const std::uint32_t layers_in_block_count = embedded_mtp_layers.value_or(0U);
+  std::uint32_t layers_in_block_count = embedded_mtp_layers.value_or(0U);
+  if (!embedded_mtp_layers.has_value() && total_layers > 0) {
+    const std::string nextn_prefix =
+        "blk." + std::to_string(total_layers - 1) + ".nextn.";
+    if (std::ranges::any_of(tensors_, [&](const auto& tensor) {
+          return tensor.name.starts_with(nextn_prefix);
+        })) {
+      layers_in_block_count = 1;
+    }
+  }
   if (layers_in_block_count > total_layers) {
     if (error_msg != nullptr) {
       *error_msg = "MTP layer count exceeds qwen block count";

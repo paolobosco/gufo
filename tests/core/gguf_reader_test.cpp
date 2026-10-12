@@ -324,6 +324,113 @@ void TestQwen38_27BParsing() {
   Expect(config->IsValidQwen(), "IsValidQwen true for 27B");
 }
 
+void AddQwen35_9BMetadata(GgufBuilder& builder, std::uint32_t block_count) {
+  builder.AddMetadataString("general.architecture", "qwen35");
+  builder.AddMetadataString("general.name", "Qwen3.5-9B");
+  builder.AddMetadataUint32("qwen35.block_count", block_count);
+  builder.AddMetadataUint32("qwen35.embedding_length", 4096);
+  builder.AddMetadataUint32("qwen35.feed_forward_length", 12288);
+  builder.AddMetadataUint32("qwen35.attention.head_count", 16);
+  builder.AddMetadataUint32("qwen35.attention.head_count_kv", 4);
+  builder.AddMetadataUint32("qwen35.attention.key_length", 256);
+  builder.AddMetadataUint32("qwen35.context_length", 262144);
+  builder.AddMetadataUint32("qwen35.full_attention_interval", 4);
+  builder.AddMetadataUint32("qwen35.ssm.conv_kernel", 4);
+  builder.AddMetadataUint32("qwen35.ssm.state_size", 128);
+  builder.AddMetadataUint32("qwen35.ssm.group_count", 16);
+  builder.AddMetadataUint32("qwen35.ssm.time_step_rank", 32);
+  builder.AddMetadataUint32("qwen35.ssm.inner_size", 4096);
+  builder.AddMetadataUint32("qwen35.rope.dimension_count", 64);
+  builder.AddMetadataFloat32("qwen35.rope.freq_base", 10000000.0F);
+  builder.AddTensor("token_embd.weight", {4096, 8}, gufo::core::GgmlType::kBF16,
+                    0);
+  builder.AddTensor("blk.31.ffn_gate.weight", {4096, 8},
+                    gufo::core::GgmlType::kQ8_0, 65536);
+}
+
+void ExpectQwen35_9BConfig(const gufo::core::GgufReader& reader,
+                           std::uint32_t mtp_layers, std::string_view label) {
+  const std::string prefix = std::string(label) + ": ";
+  std::string err;
+  const auto config = reader.ExtractModelConfig(&err);
+  Expect(config.has_value(), prefix + "ExtractModelConfig succeeds: " + err);
+  Expect(config->num_layers == 32, prefix + "32 transformer layers");
+  Expect(config->mtp_num_layers == mtp_layers, prefix + "MTP layer count");
+  Expect(config->hidden_size == 4096, prefix + "4096 hidden size");
+  Expect(config->intermediate_size == 12288, prefix + "12288 FFN size");
+  Expect(config->num_attention_heads == 16, prefix + "16 attention heads");
+  Expect(config->num_key_value_heads == 4, prefix + "4 KV heads");
+  Expect(config->head_dim == 256, prefix + "256 head dim");
+  Expect(config->rotary_dim == 64, prefix + "64 rotary dims");
+  Expect(config->context_length == 262144, prefix + "262144 context length");
+  Expect(config->AttentionSize() == 4096, prefix + "4096 attention width");
+  Expect(config->SsmQkvSize() == 8192, prefix + "8192 SSM QKV width");
+  Expect(config->SsmValueSize() == 128, prefix + "128 SSM value width");
+  Expect(config->FullAttentionLayerCount() == 8,
+         prefix + "8 full-attention layers");
+  Expect(config->SsmLayerCount() == 24, prefix + "24 SSM layers");
+  Expect(config->SsmLayerIndex(30) == 23,
+         prefix + "last SSM layer owns the last recurrent state");
+  Expect(config->SsmLayerIndex(31) == config->SsmLayerCount(),
+         prefix + "last layer is full attention, outside the SSM range");
+  Expect(config->IsValidQwen(), prefix + "IsValidQwen true");
+}
+
+void TestQwen35_9BParsing() {
+  {
+    GgufBuilder builder;
+    AddQwen35_9BMetadata(builder, 32);
+    auto binary = builder.Build();
+    std::string err;
+    auto reader =
+        gufo::core::GgufReader::OpenMemory(binary.data(), binary.size(), &err);
+    Expect(reader != nullptr, "9B reader opens: " + err);
+    Expect(!reader->HasMtpTensors(), "9B without MTP has no MTP tensors");
+    ExpectQwen35_9BConfig(*reader, 0, "9B without MTP");
+  }
+  {
+    GgufBuilder builder;
+    AddQwen35_9BMetadata(builder, 33);
+    builder.AddMetadataUint32("qwen35.nextn_predict_layers", 1);
+    builder.AddTensor("blk.32.nextn.enorm.weight", {4096},
+                      gufo::core::GgmlType::kF32, 131072);
+    auto binary = builder.Build();
+    std::string err;
+    auto reader =
+        gufo::core::GgufReader::OpenMemory(binary.data(), binary.size(), &err);
+    Expect(reader != nullptr, "9B MTP reader opens: " + err);
+    ExpectQwen35_9BConfig(*reader, 1, "9B MTP with nextn_predict_layers");
+  }
+  {
+    GgufBuilder builder;
+    AddQwen35_9BMetadata(builder, 33);
+    builder.AddTensor("blk.32.nextn.enorm.weight", {4096},
+                      gufo::core::GgmlType::kF32, 131072);
+    builder.AddTensor("blk.32.nextn.eh_proj.weight", {8192, 8},
+                      gufo::core::GgmlType::kQ8_0, 147456);
+    auto binary = builder.Build();
+    std::string err;
+    auto reader =
+        gufo::core::GgufReader::OpenMemory(binary.data(), binary.size(), &err);
+    Expect(reader != nullptr, "9B keyless MTP reader opens: " + err);
+    ExpectQwen35_9BConfig(*reader, 1, "9B MTP inferred from blk.32.nextn");
+  }
+  {
+    // Only the trailing block counts: a nextn tensor past block_count must not
+    // remove a transformer layer.
+    GgufBuilder builder;
+    AddQwen35_9BMetadata(builder, 32);
+    builder.AddTensor("blk.32.nextn.enorm.weight", {4096},
+                      gufo::core::GgmlType::kF32, 131072);
+    auto binary = builder.Build();
+    std::string err;
+    auto reader =
+        gufo::core::GgufReader::OpenMemory(binary.data(), binary.size(), &err);
+    Expect(reader != nullptr, "9B stray nextn reader opens: " + err);
+    ExpectQwen35_9BConfig(*reader, 1, "9B nextn outside block_count");
+  }
+}
+
 void WriteBinaryFile(const std::filesystem::path& path,
                      const std::vector<std::uint8_t>& data) {
   std::ofstream out(path, std::ios::binary);
@@ -637,6 +744,7 @@ int main() {
   std::cout << "Running GgufReader unit tests...\n";
   TestBasicGgufParsing();
   TestQwen38_27BParsing();
+  TestQwen35_9BParsing();
   TestSplitGgufDiscovery();
   TestVisionExclusionValidation();
   TestQuantizationLabel();
