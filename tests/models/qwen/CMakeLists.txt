@@ -35,6 +35,9 @@ add_qwen_cpu_test(qwen_ssm_test
 add_qwen_cpu_test(qwen_oracle_test
   tests/models/qwen/cpu/model_oracle_test.cpp
   "cpu;models;qwen;oracles")
+add_qwen_cpu_test(qwen_mtp_weights_test
+  tests/models/qwen/cpu/mtp_weights_test.cpp
+  "cpu;models;qwen;mtp")
 
 add_qwen_cpu_test(qwen_l1_norm_module_test
   tests/models/qwen/modules/norm_test.cpp
