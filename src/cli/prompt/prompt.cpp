@@ -293,9 +293,12 @@ ReasoningOptions PromptReasoningOptions(const PromptOptions& options) {
 }
 
 // The artifact's template decides the Qwen dialect and thinking default; an
-// unpinned Qwen3.8 template is rejected.
+// unpinned Qwen3.8 template is rejected. Flash-Next always renders with the
+// Qwen3.8 rules, as in the server; its loader validates the template.
 std::optional<tokenization::QwenTemplateTraits> PromptTemplateTraits(
     const core::GgufReader& reader) {
+  if (reader.GetMetadataString("general.architecture") == "qwen4exp")
+    return tokenization::kQwen38TemplateTraits;
   std::string note;
   const auto chat_template =
       tokenization::QwenChatTemplate::CreateFromGguf(reader, &note);
