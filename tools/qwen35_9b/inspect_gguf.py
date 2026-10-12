@@ -3,8 +3,9 @@
 
 Usage: inspect_gguf.py [--chat-template] FILE...
 
-Accepts target models and vision projectors (mmproj); --chat-template also
-prints each file's template text.
+Accepts target models and vision projectors (mmproj). --chat-template prints
+only each file's template text, with the terminating LF of the reference
+copies in src/models/qwen/reference.
 """
 import collections
 import hashlib
@@ -115,6 +116,9 @@ def main(path, show_template):
             tensors.append((name, TYPES.get(kind, f"T{kind}"), dims))
     arch = kv.get("general.architecture", "?")
     template = kv.get("tokenizer.chat_template")
+    if show_template:
+        print(template if isinstance(template, str) else "")
+        return
     print(path)
     print("  general.name        ", kv.get("general.name"))
     print("  general.basename    ", kv.get("general.basename"))
@@ -141,8 +145,6 @@ def main(path, show_template):
     nextn = [(name, kind) for name, kind, _ in tensors if ".nextn." in name]
     if nextn:
         print("  MTP tensors         ", nextn)
-    if show_template and isinstance(template, str):
-        print(template)
 
 
 if __name__ == "__main__":
