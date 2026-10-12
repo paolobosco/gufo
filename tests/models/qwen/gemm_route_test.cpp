@@ -6,6 +6,8 @@
 #include <iostream>
 #include <limits>
 
+#include "src/core/quant/ggml_gemm.hpp"
+
 namespace {
 
 using gufo::core::GgmlType;
@@ -102,6 +104,21 @@ void TestFormatCapabilities() {
   // Still unsupported everywhere, so the switch stays honest about its gaps.
   Check(!DescribeQwenGemmFormat(GgmlType::kQ2_K).cpu_direct,
         "HIP Q2_K rejection");
+}
+
+// TensorGEMV sends every quantized cpu_direct format to quant::Dot, and
+// ForwardEmbedding to quant::Dequantize; both abort on a type they do not
+// dispatch, so the route must never accept one.
+void TestCpuDirectFormatsHaveCpuDispatch() {
+  constexpr std::uint16_t kMaxGgmlType = 64;
+  for (std::uint16_t raw = 0; raw <= kMaxGgmlType; ++raw) {
+    const auto type = static_cast<GgmlType>(raw);
+    if (DescribeQwenGemmFormat(type).cpu_direct) {
+      Check(gufo::quant::IsSupported(type),
+            "every CPU-direct format must have a quant::Dot/Dequantize "
+            "dispatch");
+    }
+  }
 }
 
 void TestCpuRoutes() {
@@ -302,6 +319,7 @@ void TestRejections() {
 
 int main() {
   TestFormatCapabilities();
+  TestCpuDirectFormatsHaveCpuDispatch();
   TestCpuRoutes();
   TestDecodeAndMtpRoutes();
   TestPrefillRoutes();

@@ -6,7 +6,9 @@
 //   (2) for the types the old switch silently skipped (Q8_K/Q8_0/Q5_K), the new
 //       dispatch actually dequantizes/dots (finite + nonzero) instead of
 //       returning 0.0F, matching the canonical DequantizeQ* routines exactly;
-//   (3) F32/F16/BF16 handling is correct.
+//   (3) F32/F16/BF16 handling is correct;
+//   (4) the IQ4_NL/IQ4_XS/IQ3_S formats of the UD-Q4_K_XL artifacts route to
+//       their canonical DequantizeIQ*/DotProductIQ* routines bit for bit.
 // The OLD reference below mirrors QuantizedDot/DequantizeRow in
 // src/models/qwen/forward.cpp (Q3_K/Q4_K/Q6_K only; everything else -> 0.0F).
 
@@ -119,6 +121,21 @@ std::vector<std::uint8_t> BuildQ5_K() {
   std::memset(b.qs, 0x11, sizeof(b.qs));
   std::vector<std::uint8_t> out(sizeof(b));
   std::memcpy(out.data(), &b, sizeof(b));
+  return out;
+}
+
+// IQ blocks: random payload bytes under a bounded fp16 super-block scale, so
+// every codebook entry, sub-block scale and sign pattern is reachable without
+// producing NaN/Inf scales.
+template<class Block>
+std::vector<std::uint8_t> BuildIqBlocks(std::mt19937& rng, std::size_t blocks,
+                                        std::uint16_t d) {
+  std::vector<std::uint8_t> out =
+      RandomPackedBytes(rng, blocks * sizeof(Block));
+  for (std::size_t b = 0; b < blocks; ++b) {
+    // `d` is the leading field of every IQ block layout.
+    std::memcpy(out.data() + (b * sizeof(Block)), &d, sizeof(d));
+  }
   return out;
 }
 
@@ -303,10 +320,67 @@ int main() {
     std::printf("F16: PASS\n");
   }
 
-  // (4) IsSupported boundaries.
+  // (4) IQ formats: dispatch is bit-identical to the canonical routines over
+  // two blocks, so the per-block stride is exercised too.
+  {
+    struct IqCase {
+      const char* name;
+      gufo::core::GgmlType type;
+      std::size_t k;
+      std::vector<std::uint8_t> packed;
+      void (*dequantize)(const void*, float*, std::size_t);
+      float (*dot)(const void*, std::span<const float>, std::size_t);
+    };
+    const IqCase iq_cases[] = {
+        {"IQ4_NL", gufo::core::GgmlType::kIQ4_NL, 64,
+         BuildIqBlocks<gufo::quant::block_iq4_nl>(rng, 2, 0x2C00),  // 1/16
+         gufo::quant::DequantizeIQ4_NL, gufo::quant::DotProductIQ4_NL},
+        {"IQ4_XS", gufo::core::GgmlType::kIQ4_XS, 512,
+         BuildIqBlocks<gufo::quant::block_iq4_xs>(rng, 2, 0x1C00),  // 1/256
+         gufo::quant::DequantizeIQ4_XS, gufo::quant::DotProductIQ4_XS},
+        {"IQ3_S", gufo::core::GgmlType::kIQ3_S, 512,
+         BuildIqBlocks<gufo::quant::block_iq3_s>(rng, 2, 0x2400),  // 1/64
+         gufo::quant::DequantizeIQ3_S, gufo::quant::DotProductIQ3_S},
+    };
+    for (const auto& c : iq_cases) {
+      if (c.packed.size() != RowBytes(c.type, c.k)) {
+        std::printf("IQ %s: FAIL (block geometry)\n", c.name);
+        return 1;
+      }
+      const auto x = RandomFloats(rng, c.k);
+      std::vector<float> dst_new(c.k, 7.0F), dst_ref(c.k);
+      gufo::quant::Dequantize(c.type, c.packed.data(), dst_new.data(), c.k);
+      c.dequantize(c.packed.data(), dst_ref.data(), c.k);
+      bool match = true;
+      for (std::size_t i = 0; i < c.k; ++i) {
+        if (!SameBits(dst_new[i], dst_ref[i])) {
+          match = false;
+          break;
+        }
+      }
+      const bool finite = AllFinite(dst_new.data(), c.k);
+      const bool nonzero = !AllEquals(dst_new.data(), 0.0F, c.k);
+      const float dot_new = gufo::quant::Dot(c.type, c.packed.data(), x, c.k);
+      const float dot_ref = c.dot(c.packed.data(), x, c.k);
+      const bool dot_match = SameBits(dot_new, dot_ref);
+      const bool supported = gufo::quant::IsSupported(c.type);
+      if (!match || !finite || !nonzero || !dot_match || !supported) {
+        std::printf(
+            "IQ %s: FAIL (match=%d finite=%d nonzero=%d dot=%d "
+            "supported=%d)\n",
+            c.name, match, finite, nonzero, dot_match, supported);
+        return 1;
+      }
+      std::printf("IQ %s: PASS (dequant and dot == canonical)\n", c.name);
+    }
+  }
+
+  // (5) IsSupported boundaries.
   if (!gufo::quant::IsSupported(gufo::core::GgmlType::kF32) ||
       !gufo::quant::IsSupported(gufo::core::GgmlType::kQ8_K) ||
       gufo::quant::IsSupported(gufo::core::GgmlType::kQ4_0) ||
+      gufo::quant::IsSupported(gufo::core::GgmlType::kQ2_K) ||
+      gufo::quant::IsSupported(gufo::core::GgmlType::kIQ2_XXS) ||
       gufo::quant::IsSupported(static_cast<gufo::core::GgmlType>(65535))) {
     std::printf("IsSupported: FAIL\n");
     return 1;
