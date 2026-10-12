@@ -11,6 +11,12 @@
 // block, a chunk at depth, a depth that is not a multiple of the 16-key tile,
 // and the log-sum-exp output path.
 //
+// Both instances run: 24 query heads (Qwen3.8-27B) against the tiled kernel,
+// and 16 (Qwen3.5-9B), which the tiled kernel does not support, against the
+// FP32-cache baseline wherever its LDS allows. For both, an FP64 oracle checks
+// the first and last query head of every KV group, so a wrong head-to-KV
+// mapping or row stride cannot hide behind kernel self-agreement.
+//
 // `opt-c178-attn-prefetch` reads tile i+1's K and V into a second register set
 // while tile i computes, so the cases below also cover the loop lengths where
 // that can come apart -- a visible range of exactly one key tile, where the
@@ -36,12 +42,12 @@
 #include <hip/hip_runtime.h>
 
 #include "src/core/hip/hip_utils.hpp"
+#include "src/models/qwen/hip/detail/attention_policy.hpp"
 #include "src/models/qwen/hip/ops.hpp"
 #include "tests/models/qwen/hip/support/device.hpp"
 
 namespace {
 
-constexpr std::uint32_t kNumHeads = 24;
 constexpr std::uint32_t kNumKvHeads = 4;
 constexpr std::uint32_t kHeadDim = 256;
 
@@ -78,17 +84,29 @@ void Compare(const char* label, const std::vector<float>& got,
             << " non_finite=" << non_finite << "\n";
   if (non_finite != 0 || rel > tolerance) {
     std::cerr << label
-              << ": WMMA prefill attention disagrees with the tiled kernel\n";
+              << ": WMMA prefill attention disagrees with its reference\n";
     std::abort();
   }
 }
 
-void RunCase(std::uint32_t start_pos, std::size_t batch_size, bool want_lse,
-             std::uint32_t key_begin = 0) {
-  std::cout << "wmma prefill attention: start_pos=" << start_pos
-            << " batch=" << batch_size << " lse=" << (want_lse ? "yes" : "no")
-            << "\n";
+// Fills a device buffer with 0xFF bytes, a NaN for every float, so a launch
+// that leaves an element unwritten cannot match a finite expected value.
+void FillNan(float* data, std::size_t elements) {
+  HIP_CHECK(hipMemset(data, 0xFF, elements * sizeof(float)));
+}
 
+void RunCase(std::uint32_t num_heads, std::uint32_t start_pos,
+             std::size_t batch_size, bool want_lse,
+             std::uint32_t key_begin = 0) {
+  std::cout << "wmma prefill attention: heads=" << num_heads
+            << " start_pos=" << start_pos << " batch=" << batch_size
+            << " lse=" << (want_lse ? "yes" : "no")
+            << " key_begin=" << key_begin << "\n";
+
+  const std::uint32_t kNumHeads = num_heads;
+  const std::uint32_t gqa = kNumHeads / kNumKvHeads;
+  // The tiled kernel is the full-tensor reference only where it exists.
+  const bool tiled_reference = kNumHeads == 24;
   const auto kMaxContext = std::max<std::uint32_t>(
       1024, start_pos + static_cast<std::uint32_t>(batch_size) + 64);
   const std::size_t attention_size =
@@ -159,78 +177,148 @@ void RunCase(std::uint32_t start_pos, std::size_t batch_size, bool want_lse,
   float* lse_ref = want_lse ? d_lse_ref : nullptr;
   float* lse_new = want_lse ? d_lse_new : nullptr;
 
-  // Reference: the tiled kernel, which also packs the FP16 cache.
-  HIP_CHECK(hipMemset(d_out_ref, 0, q_elements * sizeof(float)));
-  if (!gufo::hip::LaunchBatchedAttentionTile(
-          d_q, d_k, d_v, d_gate, d_cache, v_cache, d_cache_f16, cache_f16_v,
-          d_out_ref, /*layer_idx=*/0, start_pos, batch_size, kMaxContext,
-          kNumHeads, kNumKvHeads, kHeadDim, nullptr, lse_ref, key_begin,
-          false)) {
-    std::cerr << "tiled attention rejected the production shape\n";
-    std::abort();
-  }
-
-  // Candidate: the WMMA kernel over the same range. The cache is already
-  // packed, so suppress the write and prove it reads the same bytes.
-  HIP_CHECK(hipMemset(d_out_new, 0, q_elements * sizeof(float)));
-  if (!gufo::hip::LaunchQwenWmmaAttention(
-          d_q, d_k, d_v, d_gate, d_cache, v_cache, d_cache_f16, cache_f16_v,
-          d_out_new, /*layer_idx=*/0, start_pos, batch_size, kMaxContext,
-          kNumHeads, kNumKvHeads, kHeadDim, nullptr, lse_new, key_begin,
-          /*skip_kv_write=*/true)) {
-    std::cerr << "WMMA attention rejected the production shape\n";
-    std::abort();
-  }
-  HIP_CHECK(hipDeviceSynchronize());
-
   std::vector<float> ref(q_elements);
   std::vector<float> got(q_elements);
-  HIP_CHECK(hipMemcpy(ref.data(), d_out_ref, q_elements * sizeof(float),
-                      hipMemcpyDeviceToHost));
-  HIP_CHECK(hipMemcpy(got.data(), d_out_new, q_elements * sizeof(float),
-                      hipMemcpyDeviceToHost));
-  Compare("context", got, ref, 2e-3);
+  if (tiled_reference) {
+    // Reference: the tiled kernel, which also packs the FP16 cache.
+    HIP_CHECK(hipMemset(d_out_ref, 0, q_elements * sizeof(float)));
+    if (!gufo::hip::LaunchBatchedAttentionTile(
+            d_q, d_k, d_v, d_gate, d_cache, v_cache, d_cache_f16, cache_f16_v,
+            d_out_ref, /*layer_idx=*/0, start_pos, batch_size, kMaxContext,
+            kNumHeads, kNumKvHeads, kHeadDim, nullptr, lse_ref, key_begin,
+            false)) {
+      std::cerr << "tiled attention rejected the production shape\n";
+      std::abort();
+    }
+
+    // Candidate: the WMMA kernel over the same range. The cache is already
+    // packed, so suppress the write and prove it reads the same bytes.
+    HIP_CHECK(hipMemset(d_out_new, 0, q_elements * sizeof(float)));
+    if (!gufo::hip::LaunchQwenWmmaAttention(
+            d_q, d_k, d_v, d_gate, d_cache, v_cache, d_cache_f16, cache_f16_v,
+            d_out_new, /*layer_idx=*/0, start_pos, batch_size, kMaxContext,
+            kNumHeads, kNumKvHeads, kHeadDim, nullptr, lse_new, key_begin,
+            /*skip_kv_write=*/true)) {
+      std::cerr << "WMMA attention rejected the production shape\n";
+      std::abort();
+    }
+    HIP_CHECK(hipDeviceSynchronize());
+
+    HIP_CHECK(hipMemcpy(ref.data(), d_out_ref, q_elements * sizeof(float),
+                        hipMemcpyDeviceToHost));
+    HIP_CHECK(hipMemcpy(got.data(), d_out_new, q_elements * sizeof(float),
+                        hipMemcpyDeviceToHost));
+    Compare("context", got, ref, 2e-3);
+  } else {
+    // No tiled instance: WMMA syncs the FP32 prefix and packs this chunk into
+    // both caches itself, then every later launch reads those bytes.
+    FillNan(d_out_new, q_elements);
+    if (!gufo::hip::LaunchQwenWmmaAttention(
+            d_q, d_k, d_v, d_gate, d_cache, v_cache, d_cache_f16, cache_f16_v,
+            d_out_new, /*layer_idx=*/0, start_pos, batch_size, kMaxContext,
+            kNumHeads, kNumKvHeads, kHeadDim, nullptr, lse_new, key_begin,
+            /*skip_kv_write=*/false)) {
+      std::cerr << "WMMA attention rejected the 16-head shape\n";
+      std::abort();
+    }
+    HIP_CHECK(hipDeviceSynchronize());
+    HIP_CHECK(hipMemcpy(got.data(), d_out_new, q_elements * sizeof(float),
+                        hipMemcpyDeviceToHost));
+    // Full-tensor reference from the FP32 cache. The baseline has no
+    // key_begin or LSE output and keeps one score per visible key in LDS.
+    if (key_begin == 0 && !want_lse &&
+        gufo::hip::detail::IsBaselinePrefillAttentionSupported(start_pos +
+                                                               batch_size)) {
+      FillNan(d_out_ref, q_elements);
+      gufo::hip::LaunchBatchedAttention(
+          d_q, d_k, d_v, d_gate, d_cache, v_cache, nullptr, nullptr, d_out_ref,
+          /*layer_idx=*/0, start_pos, batch_size, kMaxContext, kNumHeads,
+          kNumKvHeads, kHeadDim, nullptr, /*skip_kv_write=*/true);
+      HIP_CHECK(hipDeviceSynchronize());
+      HIP_CHECK(hipMemcpy(ref.data(), d_out_ref, q_elements * sizeof(float),
+                          hipMemcpyDeviceToHost));
+      Compare("FP32 baseline context", got, ref, 2e-3);
+    }
+  }
+
+  std::vector<float> lse_got;
+  if (want_lse) {
+    lse_got.resize(lse_elements);
+    HIP_CHECK(hipMemcpy(lse_got.data(), d_lse_new, lse_elements * sizeof(float),
+                        hipMemcpyDeviceToHost));
+  }
 
   // Independent FP64 attention over the original FP32 inputs, before the
-  // kernel rounds Q/K/V and probabilities. Include the first and last query
-  // of head zero so partial causal tiles cannot hide behind kernel agreement.
-  std::vector<float> oracle, selected;
-  for (const auto row : {std::size_t{0}, batch_size - 1}) {
-    const auto end = start_pos + row + 1;
-    std::vector<double> scores(end, -INFINITY);
-    double maximum = -INFINITY;
-    for (std::size_t key = key_begin; key < end; ++key) {
-      double dot = 0;
-      for (std::size_t dim = 0; dim < kHeadDim; ++dim) {
-        const float value = key < start_pos
-                                ? h_cache[key * kHeadDim + dim]
-                                : h_k[(key - start_pos) * kv_size + dim];
-        dot += double(h_q[row * attention_size + dim]) * value;
-      }
-      scores[key] = dot / std::sqrt(double(kHeadDim));
-      maximum = std::max(maximum, scores[key]);
-    }
-    double sum = 0;
-    for (std::size_t key = key_begin; key < end; ++key) {
-      scores[key] = std::exp(scores[key] - maximum);
-      sum += scores[key];
-    }
-    for (std::size_t dim = 0; dim < kHeadDim; ++dim) {
-      double value = 0;
+  // kernel rounds Q/K/V and probabilities. The first and last query head of
+  // every KV group, on the first and last query, both edges of the 16- and
+  // 32-row tiles and the last row of the penultimate 32-query block, so
+  // neither a head-to-KV mapping nor a partial causal tile can hide behind
+  // kernel agreement.
+  std::vector<std::size_t> rows{0, 15, 16, 31, 32, batch_size - 1};
+  if (const std::size_t blocks = (batch_size + 31) / 32; blocks >= 2)
+    rows.push_back(((blocks - 1) * 32) - 1);
+  std::ranges::sort(rows);
+  rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+  std::erase_if(rows, [&](std::size_t row) { return row >= batch_size; });
+  std::vector<std::uint32_t> heads;
+  for (std::uint32_t kv = 0; kv < kNumKvHeads; ++kv) {
+    heads.push_back(kv * gqa);
+    heads.push_back((kv * gqa) + gqa - 1);
+  }
+  std::vector<float> oracle, selected, lse_oracle, lse_selected;
+  for (const std::uint32_t head : heads) {
+    const std::size_t kv = head / gqa;
+    for (const auto row : rows) {
+      const auto end = start_pos + row + 1;
+      std::vector<double> scores(end, -INFINITY);
+      double maximum = -INFINITY;
       for (std::size_t key = key_begin; key < end; ++key) {
-        const float v = key < start_pos
-                            ? h_cache[total_kv + key * kHeadDim + dim]
-                            : h_v[(key - start_pos) * kv_size + dim];
-        value += scores[key] * v;
+        double dot = 0;
+        for (std::size_t dim = 0; dim < kHeadDim; ++dim) {
+          const float value =
+              key < start_pos
+                  ? h_cache[((kv * kMaxContext + key) * kHeadDim) + dim]
+                  : h_k[((key - start_pos) * kv_size) + (kv * kHeadDim) + dim];
+          dot += double(h_q[(row * attention_size) + (head * kHeadDim) + dim]) *
+                 value;
+        }
+        scores[key] = dot / std::sqrt(double(kHeadDim));
+        maximum = std::max(maximum, scores[key]);
       }
-      value = sum > 0 ? value / sum : 0;
-      if (!want_lse)
-        value /= 1 + std::exp(-double(h_gate[row * attention_size + dim]));
-      oracle.push_back(static_cast<float>(value));
-      selected.push_back(got[row * attention_size + dim]);
+      double sum = 0;
+      for (std::size_t key = key_begin; key < end; ++key) {
+        scores[key] = std::exp(scores[key] - maximum);
+        sum += scores[key];
+      }
+      for (std::size_t dim = 0; dim < kHeadDim; ++dim) {
+        double value = 0;
+        for (std::size_t key = key_begin; key < end; ++key) {
+          const float v =
+              key < start_pos
+                  ? h_cache[total_kv + ((kv * kMaxContext + key) * kHeadDim) +
+                            dim]
+                  : h_v[((key - start_pos) * kv_size) + (kv * kHeadDim) + dim];
+          value += scores[key] * v;
+        }
+        value = sum > 0 ? value / sum : 0;
+        const std::size_t offset =
+            (row * attention_size) + (head * kHeadDim) + dim;
+        if (!want_lse)
+          value /= 1 + std::exp(-double(h_gate[offset]));
+        oracle.push_back(static_cast<float>(value));
+        selected.push_back(got[offset]);
+      }
+      if (want_lse) {
+        // Natural-log LSE over the 1/16-scaled scores, laid out [head, token].
+        lse_oracle.push_back(
+            static_cast<float>(sum > 0 ? maximum + std::log(sum) : -INFINITY));
+        lse_selected.push_back(lse_got[(head * batch_size) + row]);
+      }
     }
   }
   Compare("FP64 original-input oracle", selected, oracle, 2e-3);
+  if (want_lse)
+    Compare("FP64 log-sum-exp oracle", lse_selected, lse_oracle, 2e-3);
 
   // Same launch again: the prefetch must not let a register from one tile reach
   // another, which would show up here as run-to-run drift.
@@ -262,6 +350,7 @@ void RunCase(std::uint32_t start_pos, std::size_t batch_size, bool want_lse,
     // Populate future KV once, then vary only the chunk boundaries. A masked
     // future value must have exactly the same effect as absent padding.
     for (const std::size_t budget : {std::size_t{31}, std::size_t{512}}) {
+      FillNan(d_out_new, q_elements);
       for (std::size_t offset = 0; offset < batch_size; offset += budget) {
         const auto count = std::min(budget, batch_size - offset);
         if (!gufo::hip::LaunchQwenWmmaAttention(
@@ -321,6 +410,9 @@ void RunCase(std::uint32_t start_pos, std::size_t batch_size, bool want_lse,
                       : words[1] / kNumKvHeads - 1};
       const auto k_work = work[0].first(sizes[0]);
       const auto v_work = work[1].first(sizes[1]);
+      FillNan(d_out_new, q_elements);
+      if (want_lse)
+        FillNan(d_lse_new, lse_elements);
       if (!gufo::hip::LaunchQwenWmmaAttention(
               d_q, d_k, d_v, d_gate, d_cache, v_cache, d_cache_f16, cache_f16_v,
               d_out_new, 0, start_pos, batch_size, kMaxContext, kNumHeads,
@@ -369,7 +461,7 @@ void RunCase(std::uint32_t start_pos, std::size_t batch_size, bool want_lse,
                  "fallback\n";
   }
 
-  if (want_lse) {
+  if (want_lse && tiled_reference) {
     std::vector<float> lref(lse_elements);
     std::vector<float> lgot(lse_elements);
     HIP_CHECK(hipMemcpy(lref.data(), d_lse_ref, lse_elements * sizeof(float),
@@ -399,30 +491,51 @@ int main() {
     return device_status;
   }
 
-  RunCase(0, 256, false);
+  // Qwen3.8-27B: 24 query heads, compared with the tiled kernel.
+  RunCase(24, 0, 256, false);
   // Not a multiple of the 32-query block, so the last block is partly out of
   // range.
-  RunCase(0, 100, false);
+  RunCase(24, 0, 100, false);
   // Exactly one key tile visible, so the prefetch never fires.
-  RunCase(0, 16, false);
+  RunCase(24, 0, 16, false);
   // Exactly two, so it fires once and then has to be suppressed.
-  RunCase(0, 32, false);
+  RunCase(24, 0, 32, false);
   // Large shallow chunks use packed heads too, including a ragged final tile.
-  RunCase(0, 1025, false);
-  RunCase(0, 2048, true);
+  RunCase(24, 0, 1025, false);
+  RunCase(24, 0, 2048, true);
   // At depth: the whole visible range, prefix and diagonal, in one pass.
-  RunCase(1024, 512, false);
+  RunCase(24, 1024, 512, false);
   // A depth that is not a multiple of the 16-key tile.
-  RunCase(1500, 128, false);
+  RunCase(24, 1500, 128, false);
   // The log-sum-exp path, which also suppresses the gate.
-  RunCase(1024, 256, true);
-  RunCase(8192, 100, false);
-  RunCase(8192, 1023, false);
-  RunCase(8192, 1024, false);
-  RunCase(32781, 1025, true);
-  RunCase(8192, 1024, true, 16);
-  RunCase(8192, 1024, true, 17);
-  RunCase(8192, 1024, false, 9216);
+  RunCase(24, 1024, 256, true);
+  RunCase(24, 8192, 100, false);
+  RunCase(24, 8192, 1023, false);
+  RunCase(24, 8192, 1024, false);
+  RunCase(24, 32781, 1025, true);
+  RunCase(24, 8192, 1024, true, 16);
+  RunCase(24, 8192, 1024, true, 17);
+  RunCase(24, 8192, 1024, false, 9216);
+
+  // Qwen3.5-9B: 16 query heads over the same four KV heads. Same shapes,
+  // so the packed-head groups (batch >= 1024) step through 4, 3, 2 and 1
+  // KV heads at depth too.
+  RunCase(16, 0, 256, false);
+  RunCase(16, 0, 100, false);
+  RunCase(16, 0, 16, false);
+  RunCase(16, 0, 32, false);
+  RunCase(16, 0, 1025, false);
+  RunCase(16, 0, 2048, true);
+  RunCase(16, 1024, 512, false);
+  RunCase(16, 1500, 128, false);
+  RunCase(16, 1024, 256, true);
+  RunCase(16, 8192, 100, false);
+  RunCase(16, 8192, 1023, false);
+  RunCase(16, 8192, 1024, false);
+  RunCase(16, 32781, 1025, true);
+  RunCase(16, 8192, 1024, true, 16);
+  RunCase(16, 8192, 1024, true, 17);
+  RunCase(16, 8192, 1024, false, 9216);
 
   std::cout << "Qwen WMMA prefill attention ops test passed on gfx1151.\n";
   return 0;
