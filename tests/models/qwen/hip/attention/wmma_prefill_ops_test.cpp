@@ -70,7 +70,8 @@ void Compare(const char* label, const std::vector<float>& got,
   double magnitude = 0.0;
   std::size_t non_finite = 0;
   for (std::size_t i = 0; i < want.size(); ++i) {
-    if (!std::isfinite(got[i])) {
+    // A reference that was never written stays NaN and must not pass.
+    if (!std::isfinite(got[i]) || !std::isfinite(want[i])) {
       ++non_finite;
       continue;
     }
@@ -234,6 +235,7 @@ void RunCase(std::uint32_t num_heads, std::uint32_t start_pos,
           d_q, d_k, d_v, d_gate, d_cache, v_cache, nullptr, nullptr, d_out_ref,
           /*layer_idx=*/0, start_pos, batch_size, kMaxContext, kNumHeads,
           kNumKvHeads, kHeadDim, nullptr, /*skip_kv_write=*/true);
+      HIP_CHECK(hipGetLastError());
       HIP_CHECK(hipDeviceSynchronize());
       HIP_CHECK(hipMemcpy(ref.data(), d_out_ref, q_elements * sizeof(float),
                           hipMemcpyDeviceToHost));

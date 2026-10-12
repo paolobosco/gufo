@@ -69,6 +69,44 @@ void Expect(bool condition, const std::string& message) {
     throw std::runtime_error(message);
 }
 
+// Sub-checks that could not run on this artifact. They are reported with the
+// final status line so a partial run is never mistaken for a full pass.
+std::vector<std::string>& SkippedChecks() {
+  static std::vector<std::string> skipped;
+  return skipped;
+}
+
+// On the 9B every projection format below takes the same native W x A8 WMMA
+// prefill route at any batch size (the FP16 low-bit route is 27B-only), so
+// chunked and whole prefills must agree bit for bit.
+bool HasChunkExactProjections(const gufo::models::QwenModelWeights& weights) {
+  const auto exact = [](const gufo::models::QwenTensorRef& tensor) {
+    switch (tensor.type) {
+      case gufo::core::GgmlType::kQ8_0:
+      case gufo::core::GgmlType::kQ3_K:
+      case gufo::core::GgmlType::kQ4_K:
+      case gufo::core::GgmlType::kQ5_K:
+      case gufo::core::GgmlType::kQ6_K:
+      case gufo::core::GgmlType::kIQ4_NL:
+      case gufo::core::GgmlType::kIQ4_XS:
+      case gufo::core::GgmlType::kIQ3_S:
+        return true;
+      default:
+        return false;
+    }
+  };
+  return std::ranges::all_of(weights.layers, [&](const auto& layer) {
+    const bool mixer = layer.is_full_attention
+                           ? exact(layer.attn_q) && exact(layer.attn_k) &&
+                                 exact(layer.attn_v) && exact(layer.attn_output)
+                           : exact(layer.attn_qkv) && exact(layer.attn_gate) &&
+                                 exact(layer.ssm_alpha) &&
+                                 exact(layer.ssm_beta) && exact(layer.ssm_out);
+    return mixer && exact(layer.ffn_gate) && exact(layer.ffn_up) &&
+           exact(layer.ffn_down);
+  });
+}
+
 struct Case {
   std::vector<Token> tokens;
   std::vector<std::vector<float>> logits;
@@ -533,6 +571,8 @@ void CheckCpuReference(const gufo::core::GgufReader& reader,
   if (const auto type = FindCpuUnsupportedType(*weights)) {
     std::cout << "CPU reference skipped: unsupported tensor format "
               << gufo::core::ToString(*type) << " (not a pass)\n";
+    SkippedChecks().push_back("cpu-reference (" +
+                              std::string(gufo::core::ToString(*type)) + ")");
     return;
   }
   const auto& config = weights->config;
@@ -628,7 +668,7 @@ void CheckLongPrefill(
   // Mirror the 27B qualification: chunk-exact prefill is established for Q8_0
   // FFN weights only. The 27B FP16 large-prefill route does not match this
   // shape, but other formats remain unqualified until measured.
-  const auto ffn_type = model->GetWeights().layers.front().ffn_gate.type;
+  const bool chunk_exact = HasChunkExactProjections(model->GetWeights());
   for (const auto& [depth, length] : kLongPrefillCases) {
     const std::uint32_t end = depth + length;
     // A cyclic history lets top-1 follow a copied continuation even with stale
@@ -660,14 +700,13 @@ void CheckLongPrefill(
               << " logits=" << Fingerprint(full_logits)
               << " features=" << features << '\n';
     if (depth == kChunkDepth) {
-      if (ffn_type == gufo::core::GgmlType::kQ8_0) {
+      if (chunk_exact) {
         CheckChunkInvariance(*executor, *prefix, prompt, depth, full_logits,
                              features);
       } else {
-        std::cout << "prefill chunk check skipped: "
-                  << gufo::core::ToString(ffn_type)
-                  << " FFN weights are not qualified as chunk-exact (not a "
-                     "pass)\n";
+        std::cout << "prefill chunk check skipped: a projection format "
+                     "outside the native WMMA prefill route (not a pass)\n";
+        SkippedChecks().push_back("chunk-invariance");
       }
     }
 
@@ -916,7 +955,14 @@ int main(int argc, const char* const* argv) {
     } else {
       (void)Capture(model, CheckMode::kAll);
     }
-    std::cout << "Qwen3.5-9B target checks passed.\n";
+    if (SkippedChecks().empty()) {
+      std::cout << "Qwen3.5-9B target checks passed.\n";
+    } else {
+      std::cout << "Qwen3.5-9B target checks passed; skipped (not passes):";
+      for (const auto& check : SkippedChecks())
+        std::cout << ' ' << check;
+      std::cout << '\n';
+    }
     return 0;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';
