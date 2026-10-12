@@ -32,7 +32,7 @@ Without `--context` the server allocates the native 262,144-token context.
 | Mode | Selection | Status |
 | --- | --- | --- |
 | AR | No speculative option | Text; CLI and HTTP. |
-| MTP | `--speculative mtp --mtp-model PATH` in `gufo prompt`/`chat` | Needs a GGUF with the MTP layer, e.g. `unsloth/Qwen3.5-9B-MTP-GGUF`, passed as both `--model` and `--mtp-model`. Not qualified. |
+| MTP | `--speculative mtp --mtp-model PATH` in `gufo prompt`/`chat` | Needs a GGUF with the MTP layer at `blk.32`, e.g. `unsloth/Qwen3.5-9B-MTP-GGUF`, passed as both `--model` and `--mtp-model`; MTP matrices may use any accepted format except F16. Not qualified. |
 | DFlash2 | — | No DFlash-2 draft exists for 9B; `z-lab/Qwen3.5-9B-DFlash` is DFlash v1. |
 
 Accepted tensor formats: BF16, Q8_0, Q3_K–Q6_K, IQ4_XS, IQ4_NL and IQ3_S
