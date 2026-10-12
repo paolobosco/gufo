@@ -10,6 +10,11 @@ bucket for the remaining mass.
 
   llama_parity.py --probe build/gpu-test/.../qwen36_35b_a3b_gpu_probe \
       --model MODEL.gguf --url http://127.0.0.1:18080 [--tokens 64] [--top 20]
+      [--long 7000 --long 15000 [--long-only]]
+
+--long N adds a recall prompt of about N tokens, so prefill crosses several
+2048-token chunks and decode attends over the whole context. llama-server
+needs a context of at least N plus --tokens.
 """
 
 import argparse
@@ -18,6 +23,7 @@ import math
 import re
 import subprocess
 import sys
+import tempfile
 import urllib.request
 
 PROMPTS = {
@@ -44,6 +50,32 @@ PROMPTS = {
 }
 
 
+CITIES = ("Turin", "Cagliari", "Bari", "Trieste", "Verona", "Lecce", "Parma")
+
+
+def record(index):
+    return (f"Record {index:05d}: the warehouse in {CITIES[index % len(CITIES)]} "
+            f"holds {(index * 7919) % 9973} units of part P-{(index * 104729) % 100000:05d}.\n")
+
+
+def long_prompt(url, tokens):
+    """Chat prompt of about `tokens` tokens asking for one record mid-way."""
+    sample = "".join(record(i) for i in range(200))
+    per_record = len(tokenize(url, sample)) / 200
+    count = max(8, int((tokens - 80) / per_record))
+    target = count // 2
+    return ("<|im_start|>user\nThe inventory below lists one record per line.\n" +
+            "".join(record(i) for i in range(count)) +
+            f"Which warehouse holds part P-{(target * 104729) % 100000:05d}, and how "
+            "many units? Then summarize the three records that follow it."
+            "<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n")
+
+
+def tokenize(url, prompt):
+    return post(url, "/tokenize", {"content": prompt, "add_special": False,
+                                   "parse_special": True})["tokens"]
+
+
 def post(url, path, body):
     request = urllib.request.Request(
         url + path, json.dumps(body).encode(),
@@ -52,8 +84,7 @@ def post(url, path, body):
 
 
 def llama(url, prompt, tokens, top):
-    ids = post(url, "/tokenize", {"content": prompt, "add_special": False,
-                                  "parse_special": True})["tokens"]
+    ids = tokenize(url, prompt)
     reply = post(url, "/completion", {
         "prompt": prompt, "n_predict": tokens, "temperature": 0, "top_k": 1,
         "n_probs": top, "cache_prompt": False, "return_tokens": True,
@@ -63,11 +94,15 @@ def llama(url, prompt, tokens, top):
     return ids, reply["tokens"], steps
 
 
-def gufo(probe, model, prompt, follow, top):
-    out = subprocess.run(
-        [probe, "--model", model, "--prompt", prompt, "--top", str(top),
-         "--follow", ",".join(map(str, follow))],
-        capture_output=True, check=True).stdout.decode(errors="replace")
+def gufo(probe, model, prompt, follow, top, context):
+    with tempfile.NamedTemporaryFile("w", suffix=".txt") as file:
+        file.write(prompt)
+        file.flush()
+        out = subprocess.run(
+            [probe, "--model", model, "--prompt-file", file.name,
+             "--top", str(top), "--context", str(context),
+             "--follow", ",".join(map(str, follow))],
+            capture_output=True, check=True).stdout.decode(errors="replace")
     header = re.search(r"^prompt tokens \(\d+\):(.*)$", out, re.M)
     if header is None:
         raise RuntimeError("gpu_probe printed no prompt tokens")
@@ -96,20 +131,31 @@ def main():
     parser.add_argument("--url", required=True)
     parser.add_argument("--tokens", type=int, default=64)
     parser.add_argument("--top", type=int, default=20)
+    parser.add_argument("--long", type=int, action="append", default=[],
+                        metavar="TOKENS", help="Add a recall prompt of about TOKENS")
+    parser.add_argument("--long-only", action="store_true",
+                        help="Skip the short prompts")
     args = parser.parse_args()
+    if args.long_only and not args.long:
+        parser.error("--long-only needs --long")
+    prompts = {} if args.long_only else dict(PROMPTS)
+    for tokens in args.long:
+        prompts[f"long_{tokens}"] = long_prompt(args.url, tokens)
     rows, total = [], {"positions": 0, "top1": 0, "tv": [], "kl": []}
-    for name, prompt in PROMPTS.items():
+    for name, prompt in prompts.items():
         llama_ids, continuation, reference = llama(
             args.url, prompt, args.tokens, args.top)
+        context = max(4096, len(llama_ids) + len(continuation) + 64)
         gufo_ids, candidate = gufo(args.probe, args.model, prompt,
-                                   continuation, args.top)
+                                   continuation, args.top, context)
         tvs, kls, top1 = [], [], 0
         for p, q in zip(reference, candidate):
             tv, kl, same = compare(p, q)
             tvs.append(tv)
             kls.append(kl)
             top1 += same
-        rows.append({"prompt": name, "tokenization_match": llama_ids == gufo_ids,
+        rows.append({"prompt": name, "prompt_tokens": len(llama_ids),
+                     "tokenization_match": llama_ids == gufo_ids,
                      "positions": len(tvs), "top1_agreement": top1,
                      "mean_tv": sum(tvs) / len(tvs), "max_tv": max(tvs),
                      "mean_kl": sum(kls) / len(kls), "max_kl": max(kls)})

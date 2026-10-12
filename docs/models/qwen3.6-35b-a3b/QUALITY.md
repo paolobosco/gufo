@@ -27,7 +27,7 @@ BF16 model.
 | Chat template | Needed only for a template hash outside the pins. A Jinja harness with the `transformers` conventions first reproduces the six Qwen3.6 goldens from the official template (revision `995ad96e`); the embedded template must then give the same six render hashes before its hash is pinned. `chat_template_hf_token_golden_test` passes with `GUFO_QWEN36_GGUF` set; a skip (77) is a failure | TODO |
 | Operators | `qwen36_35b_a3b.*` CPU and HIP tests pass, including routed Q6_K/Q8_0 MMQ invariance across tile widths, grid bounds and batch splits, and gate/up decode invariance at widths 1 to 32 | TODO |
 | Full model | `session_test` (`--prefill-only`, `--batch-only`, then complete) and `snapshot_test` pass: greedy MTP equals AR token for token, C2 to C8 equal isolated execution, prefill chunks are bit-identical, seeded replay is exact | TODO |
-| Upstream agreement, llama.cpp `b11069` | 8 prompts × up to 64 teacher-forced positions: tokenization matches for every prompt; top-1 at least 99%; mean KL at most 0.005; KL p99 at most 0.1 | TODO |
+| Upstream agreement, llama.cpp `b11069` | 8 prompts × up to 64 teacher-forced positions, then recall prompts of about 7K and 15K tokens: tokenization matches for every prompt; top-1 at least 99%; mean KL at most 0.005; KL p99 at most 0.1 | TODO |
 | CLI | `gufo prompt` at temperature 0 prints the same `[TokenTrace]` for AR and MTP. `gufo bench --validate-prefill 2048` reports `finite=1` and winner rank 1; cosine, RMSE and maximum error are recorded here as measurements | TODO |
 | Serving | `tests/functional/run.py --record-baseline` with preset `qwen36`, suites `all` and `metrics`, prints `record-baseline passed` for AR and for MTP | TODO |
 | Shared paths | Flash-Next, Qwen3.8 27B and DeepSeek V4 Flash session and serving checks pass before and after on the same files; `gufo prompt` and `gufo chat` with `--speculative mtp` and no `--mtp-model` exit 2 before loading weights on those models; `gufo bench` and `gufo serve llm` keep their upstream exit status 1. A skip leaves the check open | TODO |
@@ -72,6 +72,10 @@ build/gpu-test/tests/models/qwen36_35b_a3b/qwen36_35b_a3b_snapshot_test --model 
 python3 tests/models/qwen36_35b_a3b/llama_parity.py \
   --probe build/gpu-test/tests/models/qwen36_35b_a3b/qwen36_35b_a3b_gpu_probe \
   --model "$MODEL" --url http://127.0.0.1:8080
+# Long prompts; llama-server needs -c 16384 or more
+python3 tests/models/qwen36_35b_a3b/llama_parity.py \
+  --probe build/gpu-test/tests/models/qwen36_35b_a3b/qwen36_35b_a3b_gpu_probe \
+  --model "$MODEL" --url http://127.0.0.1:8080 --long 7000 --long 15000 --long-only
 
 # CLI
 ./result/bin/gufo prompt -m "$MODEL" -p "$PROMPT" -n 256 --temperature 0 -v
@@ -83,7 +87,7 @@ python3 tests/models/qwen36_35b_a3b/llama_parity.py \
 nix develop -c python3 tests/functional/run.py --record-baseline \
   --output "$OUT/ar" --sampling-preset qwen36 --suite all \
   --expected-input-modalities text -- \
-  ./result/bin/gufo serve llm --model "$MODEL" --sessions 4
+  ./result/bin/gufo serve llm --model "$MODEL" --sessions 4 --context 32768
 ```
 
 ## Benchmark method
