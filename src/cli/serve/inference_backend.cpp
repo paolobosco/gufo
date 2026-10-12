@@ -2981,12 +2981,14 @@ bool InferenceBackend::load(const std::string& model_path, std::string* error,
   }
   std::shared_ptr<models::qwen::vision::Encoder> vision;
   try {
-    if (reader->GetMetadataUint64("qwen35.embedding_length") == 5120) {
-      vision = models::qwen::vision::Encoder::Open(model_path,
-                                                   vision_model_path, 5120);
+    const auto width =
+        reader->GetMetadataUint64("qwen35.embedding_length").value_or(0);
+    if (width == 5120 || width == 4096) {
+      vision = models::qwen::vision::Encoder::Open(
+          model_path, vision_model_path, static_cast<std::uint32_t>(width));
     } else if (!vision_model_path.empty()) {
       throw std::invalid_argument(
-          "image input supports Qwen3.8-27B and Flash-Next");
+          "image input supports Qwen3.8-27B, Qwen3.5-9B and Flash-Next");
     }
   } catch (const std::exception& e) {
     SetError(error, e.what());

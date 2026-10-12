@@ -345,9 +345,11 @@ struct Encoder::Impl {
     expect("clip.vision.attention.head_count", kHeads);
     expect("clip.vision.spatial_merge_size", 2);
     expect("clip.vision.image_size", 768);
-    const std::string_view model =
-        width == 5120 ? "Qwen3.8-27B" : "Qwen3.8-Flash-Next";
-    if ((width != 5120 && width != 2560) ||
+    // The projector width selects the language model; the ViT is shared.
+    const std::string_view model = width == 5120   ? "Qwen3.8-27B"
+                                   : width == 4096 ? "Qwen3.5-9B"
+                                                   : "Qwen3.8-Flash-Next";
+    if ((width != 5120 && width != 4096 && width != 2560) ||
         reader->GetMetadataString("general.architecture") != "clip" ||
         reader->GetMetadataString("general.type") != "mmproj" ||
         reader->GetMetadataString("general.basename") != model ||
@@ -356,7 +358,7 @@ struct Encoder::Impl {
         reader->GetMetadataFloat32(
             "clip.vision.attention.layer_norm_epsilon") != 1e-6F) {
       throw std::invalid_argument(
-          "vision sidecar does not match the Qwen3.8 model");
+          "vision sidecar does not match the Qwen model");
     }
     for (const auto key : {"clip.vision.image_mean", "clip.vision.image_std"}) {
       const auto* value = reader->FindMetadata(key);
@@ -376,7 +378,7 @@ struct Encoder::Impl {
         std::any_of(deepstack->begin(), deepstack->end(),
                     [](auto enabled) { return enabled != 0; })) {
       throw std::invalid_argument(
-          "Qwen3.8 vision requires a final-layer-only merger");
+          "Qwen vision requires a final-layer-only merger");
     }
     if (reader->GetMetadataString("clip.projector_type") != "qwen3vl_merger") {
       throw std::invalid_argument("unsupported Qwen vision projector");

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check both Qwen3.8 vision encoders against pinned, unmodified HF operators.
+"""Check the Qwen vision encoders against pinned, unmodified HF operators.
 
 The same BF16 GGUF weights are used on both sides. This validates operator
 execution and binding, not the upstream GGUF conversion or language quantization.
@@ -80,13 +80,21 @@ class AttentionRegistry:
         return fallback
 
 
+# Projector width -> Transformers vision classes. Qwen3.8-27B and Qwen3.5-9B
+# share the qwen3_5 tower; Flash-Next uses qwen4_exp.
+VISION_FAMILIES = {
+    5120: ("Qwen3_5", "qwen3_5"),
+    4096: ("Qwen3_5", "qwen3_5"),
+    2560: ("Qwen4Exp", "qwen4_exp"),
+}
+
+
 def source_model(source, output_width):
     directory = source / "src/transformers"
     for name, expected in SOURCE_HASHES.items():
         if hashlib.sha256((directory / name).read_bytes()).hexdigest() != expected:
             raise ValueError(f"{name} differs from Transformers {REVISION}")
-    prefix = "Qwen3_5" if output_width == 5120 else "Qwen4Exp"
-    family = "qwen3_5" if output_width == 5120 else "qwen4_exp"
+    prefix, family = VISION_FAMILIES[output_width]
     environment = dict(
         torch=torch, nn=nn, F=F, GradientCheckpointingLayer=nn.Module,
         ACT2FN={"gelu_pytorch_tanh": lambda value: F.gelu(value, approximate="tanh")},
@@ -122,8 +130,9 @@ def load_weights(path, source):
     metadata = codec.parse_gguf(path)
     tensors = {tensor["name"]: tensor for tensor in metadata["tensors"]}
     width = metadata["user_kv"]["clip.vision.projection_dim"]
-    if width not in (2560, 5120):
-        raise ValueError("expected a Qwen3.8-27B or Flash-Next BF16 vision sidecar")
+    if width not in VISION_FAMILIES:
+        raise ValueError(
+            "expected a Qwen3.8-27B, Qwen3.5-9B or Flash-Next BF16 vision sidecar")
     environment, prefix = source_model(source, width)
     config = SimpleNamespace(
         hidden_size=1152, intermediate_size=4304, hidden_act="gelu_pytorch_tanh",
