@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "src/models/qwen/hip/detail/ssm_norm.hpp"
 #include "src/models/qwen/hip/ops/ssm.hpp"
 
 namespace gufo::hip {
@@ -28,10 +29,7 @@ __global__ void BatchedSSMPostNormGateKernel(
   float* o_h = out_buf + (t * inner_size) + (h * val_dim);
 
   const float in_val = (tid < val_dim) ? in_h[tid] : 0.0F;
-  float o_sq = in_val * in_val;
-  for (int offset = 16; offset > 0; offset >>= 1) {
-    o_sq += __shfl_xor(o_sq, offset);
-  }
+  const float o_sq = detail::WarpSquareSum(in_val);
 
   __shared__ float s_warp_rms[4];
   if (lane_id == 0) {

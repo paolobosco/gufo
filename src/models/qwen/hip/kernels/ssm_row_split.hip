@@ -14,6 +14,7 @@
 #include <stdexcept>
 
 #include "src/models/qwen/hip/detail/recurrent_state.hpp"
+#include "src/models/qwen/hip/detail/ssm_norm.hpp"
 #include "src/models/qwen/hip/ops/gemm.hpp"
 #include "src/models/qwen/hip/ops/ssm.hpp"
 
@@ -334,13 +335,7 @@ __global__ void BatchedSSMPostNormGateFp16Kernel(const float* raw,
 #pragma unroll
   for (unsigned j = 0; j < 4; ++j) {
     values[j] = raw[base + lane + j * 32];
-    squares[j] = __fmul_rn(values[j], values[j]);
-  }
-  for (int shift = 16; shift > 0; shift >>= 1) {
-#pragma unroll
-    for (unsigned j = 0; j < 4; ++j) {
-      squares[j] += __shfl_xor(squares[j], shift);
-    }
+    squares[j] = detail::WarpSquareSum(values[j]);
   }
   const float sum =
       __shfl(__fadd_rn(__fadd_rn(__fadd_rn(squares[0], squares[1]), squares[2]),
