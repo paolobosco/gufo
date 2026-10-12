@@ -4,8 +4,9 @@ Hybrid Gated DeltaNet / gated-attention mixture-of-experts text model on
 gfx1151: 40 layers (30 DeltaNet, 10 full attention), 256 experts with 8 routed
 plus one shared, about 3B active parameters, and a native one-layer MTP block.
 Supported target: `unsloth/Qwen3.6-35B-A3B-MTP-GGUF`, **UD-Q6_K_XL** (one file
-with the MTP block). Text only. Support is in progress: the file identity,
-qualification and measurements on gfx1151 are TODO.
+with the MTP block). Text only. Qualified on gfx1151 for generation and
+serving in AR and MTP, with the open items listed in [Quality](QUALITY.md);
+benchmarks are not measured yet.
 
 [Benchmarks](BENCHMARKS.md) · [Quality](QUALITY.md) · [Experiments](EXPERIMENTS.md)
 
@@ -23,9 +24,8 @@ qualification and measurements on gfx1151 are TODO.
 | Norms, DeltaNet convolution, alpha/beta, `ssm_a`, `ssm_dt`; `ffn_gate_inp` and `ffn_gate_inp_shexp` of blocks 0 to 39 | F32 |
 | `ffn_gate_inp` and `ffn_gate_inp_shexp` of block 40 | BF16 |
 
-Totals: Q8_0 303, Q6_K 80, F32 368, BF16 2. This layout is inferred from a
-published inventory and the file size; confirm it with the inventory tool
-([Quality](QUALITY.md#artifact-identity)) before qualification. The loader
+Totals: Q8_0 303, Q6_K 80, F32 368, BF16 2, confirmed on the file with the
+inventory tool ([Quality](QUALITY.md#artifact-identity)). The loader
 also accepts other `qwen35moe` files with Q4_K, Q5_K, Q6_K or Q8_0 experts
 and Q8_0, K-quant, BF16, F16 or F32 dense weights, but only UD-Q6_K_XL is the
 documented target. An optional
@@ -35,8 +35,8 @@ documented target. An optional
 Prompts use Gufo's compiled Qwen3.6 template, so loading requires the GGUF's
 embedded `tokenizer.chat_template` to have a pinned SHA-256: the official
 Qwen/Qwen3.6-35B-A3B template (revision `995ad96e`) or Unsloth's variant.
-Other templates are rejected with their hash. The UD-Q6_K_XL template hash is
-TODO.
+Other templates are rejected with their hash. The UD-Q6_K_XL file embeds
+Unsloth's variant (`55d49314`).
 
 ## Load and run
 
