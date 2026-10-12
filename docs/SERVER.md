@@ -785,7 +785,10 @@ keys last. Impossible strict schemas are rejected before generation.
 call, with the same argument syntax as `auto`. Where
 the backend cannot constrain sampling, an unmet `required` choice still returns
 `tool_choice_unsatisfied` (HTTP 502, or an SSE error after streaming starts).
-Stops and token limits terminate normally without emitting incomplete calls.
+Stops and token limits terminate normally. Buffered responses omit an
+interrupted call; a stream that already opened it (Chat argument deltas,
+a Responses `function_call` item) ends it with unparseable arguments, and
+Responses marks the item `incomplete`. Neither is ever executable.
 With no tools or `tool_choice:"none"`, tool markers are ordinary text and do
 not interrupt reasoning or delay streaming.
 
@@ -794,7 +797,8 @@ markup, before streaming or response parsing. Partial prefixes are buffered;
 matched sequences and subsequent text are excluded. OpenAI reports
 `finish_reason: "stop"`; Messages reports `stop_reason: "stop_sequence"` and
 the matched `stop_sequence`. EOS and length limits flush unmatched prefixes.
-Interrupted tool calls are omitted; complete preceding calls are retained.
+Interrupted tool calls are not completed (see above); complete preceding
+calls are retained.
 Usage includes the token completing the match. Each request has independent
 matching state, including speculative batches; caches retain only correctly
 labelled executed model state. Stops must be nonempty, at most 4 KiB each and

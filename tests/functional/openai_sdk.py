@@ -1444,7 +1444,20 @@ def check_native_tools(client, model, checks, vision=False):
         final = events[-1].response
         assert final.status == "incomplete", final
         assert final.incomplete_details.reason == "max_output_tokens", final
-        assert not any(item.type == "function_call" for item in final.output), final
+        # As the Chat limits above: once the call header is decoded, the
+        # stream opens its item; the limit closes it incomplete, never with
+        # executable arguments, and no call markup becomes text.
+        calls = [item for item in final.output if item.type == "function_call"]
+        assert len(calls) <= (0 if limit == 1 else 1), final
+        for call in calls:
+            assert call.status == "incomplete" and call.name == "record", final
+            try:
+                json.loads(call.arguments)
+            except json.JSONDecodeError:
+                pass
+            else:
+                raise AssertionError(("interrupted tool was made executable", final))
+        assert not final.output_text.strip(), final
         record(f"responses_tool_limit_{limit}", final.to_dict())
 
     def isolated(index):
