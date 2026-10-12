@@ -4,14 +4,14 @@
   "model": {
     "id": "Qwen3.6-35B-A3B",
     "docs": "qwen3.6-35b-a3b",
-    "label": "Qwen3.6 Q6dense"
+    "label": "Qwen3.6 UD-Q6_K_XL"
   },
   "files": {
-    "gguf": "Qwen3.6-35B-A3B-Q6dense.gguf (dense Q6_K, routed experts as Unsloth UD-Q4_K_XL, native MTP block)"
+    "gguf": "Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf (unsloth/Qwen3.6-35B-A3B-MTP-GGUF, native MTP block)"
   },
   "variants": {
     "default": {
-      "label": "Q6dense",
+      "label": "UD-Q6_K_XL",
       "requires": [
         "gguf"
       ]

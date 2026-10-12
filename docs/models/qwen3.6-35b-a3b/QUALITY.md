@@ -1,43 +1,50 @@
 # Qwen3.6-35B-A3B quality
 
-**Gufo matches llama.cpp on the same GGUF at 443 of 445 positions** (top-1),
-mean KL 0.0020 and mean total variation 0.0064 over eight prompts, with
-identical tokenization. Q6dense target with its native MTP block;
-[identities](artifacts/model-identities.json). These checks compare two
-implementations of one quantized file; they do not qualify the quantization
-against the original BF16 model. Measured October 3, 2026.
+**UD-Q6_K_XL qualification on gfx1151 is TODO.** The checks below are the
+gate for this file; each status becomes a dated result. The runtime was first
+developed and compared with llama.cpp on a different quantization of this
+model ([provenance](README.md#provenance)); those results do not carry over
+and are not reported here. These checks compare implementations of one
+quantized file; they do not qualify the quantization against the original
+BF16 model.
 
-| Check | Result |
+## Artifact identity
+
+| Item | Value |
 | --- | --- |
-| Upstream agreement, llama.cpp `b11069` | 8 prompts × up to 64 teacher-forced positions (prose, code, JSON extraction, math, translation, raw text, list, thinking). Top-1 443/445; KL(llama.cpp ‖ Gufo) mean 0.0020, p99 0.055, max 0.085; TV mean 0.0064, max 0.18. KL uses the union of both top-20 sets plus one residual bucket. [Evidence](artifacts/llama-parity.json). |
-| Greedy MTP versus AR | Frontier logits, tokens and RNG are bit-identical at depths 16 and 4096 for greedy and three sampled configurations, and after a fresh model load with varied draft budgets |
-| Batched sessions, C2/C4/C6/C8 | Logits, tokens, draft and acceptance counts, RNG, sampling history and full snapshot bytes match isolated execution, including ragged chains mixed with one-token decoding |
-| Prefill chunking | Logits and sampled MTP replay are bit-identical across chunk boundaries 94–135 of 136 tokens, 1025 of 2048 and 2048 of 4096 |
-| Seeded MTP cache rebuilding | Two seeds × 200 tokens replay exactly after different prefill splits and snapshot restore |
-| Serving | 25 sampling strategies replay exactly through the HTTP backend, serially and in concurrent pairs, with exact AR/greedy prefixes for 1–3-token budgets; cancellation and invalid peers leave other sessions exact |
-| Operators | FP64 references for prefill and 8-bit-KV decode attention (decode rows identical at widths 1–8, prefill identical across chunkings), DeltaNet, dense Q4_K/Q5_K/Q6_K decode projections (identical at widths 1–8), routed experts, router/alpha-beta projections, MTP hidden normalization and draft probability |
+| Repository | `unsloth/Qwen3.6-35B-A3B-MTP-GGUF` |
+| Revision | TODO |
+| File | `Qwen3.6-35B-A3B-UD-Q6_K_XL.gguf` |
+| File SHA-256 | TODO |
+| Embedded chat template SHA-256 | TODO; pinned values are the official `e84f32a2` and the Unsloth `55d49314` templates |
+| Layout | Expected `qwen35moe`, `block_count` 41, `nextn_predict_layers` 1, 753 tensors: Q8_0 303, Q6_K 80, F32 368, BF16 2 |
+
+## Qualification checks
+
+| Check | Criterion | Status |
+| --- | --- | --- |
+| Identity | `inventory` reproduces the expected layout; revision, file and template hashes recorded above | TODO |
+| Chat template | Needed only for a template hash outside the pins. A Jinja harness with the `transformers` conventions first reproduces the six Qwen3.6 goldens from the official template (revision `995ad96e`); the embedded template must then give the same six render hashes before its hash is pinned. `chat_template_hf_token_golden_test` passes with `GUFO_QWEN36_GGUF` set; a skip (77) is a failure | TODO |
+| Operators | `qwen36_35b_a3b.*` CPU and HIP tests pass, including routed Q6_K/Q8_0 MMQ invariance across tile widths, grid bounds and batch splits, and gate/up decode invariance at widths 1 to 32 | TODO |
+| Full model | `session_test` (`--prefill-only`, `--batch-only`, then complete) and `snapshot_test` pass: greedy MTP equals AR token for token, C2 to C8 equal isolated execution, prefill chunks are bit-identical, seeded replay is exact | TODO |
+| Upstream agreement, llama.cpp `b11069` | 8 prompts × up to 64 teacher-forced positions: tokenization matches for every prompt; top-1 at least 99%; mean KL at most 0.005; KL p99 at most 0.1 | TODO |
+| CLI | `gufo prompt` at temperature 0 prints the same `[TokenTrace]` for AR and MTP. `gufo bench --validate-prefill 2048` reports `finite=1` and winner rank 1; cosine, RMSE and maximum error are recorded here as measurements | TODO |
+| Serving | `tests/functional/run.py --record-baseline` with preset `qwen36`, suites `all` and `metrics`, prints `record-baseline passed` for AR and for MTP | TODO |
+| Shared paths | Flash-Next, Qwen3.8 27B and DeepSeek V4 Flash session and serving checks pass before and after on the same files; `gufo prompt` and `gufo chat` with `--speculative mtp` and no `--mtp-model` exit 2 before loading weights on those models; `gufo bench` and `gufo serve llm` keep their upstream exit status 1. A skip leaves the check open | TODO |
+| Benchmarks | [Benchmarks](BENCHMARKS.md) cells measured | TODO |
 
 Decode attention reads an 8-bit copy of the K/V cache (one F16 scale per 32
-values); prefill keeps F16 K/V and reads Q8_0 copies of the Q6_K matrices.
-Both are covered by the llama.cpp comparison above. Batched prefill and
-one-token decoding of the same prefix therefore differ slightly: with a
-repeated synthetic prompt, `gufo bench --validate-prefill` reports the same
-top-1 token with cosine 0.93–0.997 between the two logit vectors, below the
-gate tuned for Flash-Next.
+values); prefill keeps F16 K/V. Batched prefill and one-token decoding of the
+same prefix therefore differ slightly, and `gufo bench --validate-prefill` can
+exit 1 on the cosine gate tuned for Flash-Next while selecting the same top-1
+token. The CLI check records those values instead of gating on them.
+
+Q6_K routed gate/up projections take the MMQ route in prefill; no routed WMMA
+decoder reads Q6_K. The operator tests above cover its batch and tile
+invariance; the full-model checks cover the result.
 
 Sampled MTP can consume different RNG draws from AR. Seeded replay requires
 the same build, request budget, capacity and sampling configuration.
-
-## Task quality
-
-Crawler extraction (company products and bios), thinking off, scored 0–10 by
-`qwen/qwen3.8-max-0902` at temperature 0. Prompts and pages are private and
-are not retained here.
-
-| Comparison | Products | Bios |
-| --- | ---: | ---: |
-| Q6dense versus Unsloth UD-Q4_K_XL, same pages | 7.25 / 7.25 | 7.62 / 7.62 |
-| Qwen3.6 Q6dense (Gufo) versus Qwen3.8-Flash-Next (OpenRouter), 6 + 6 new pages | 7.83 / 8.33 | 7.67 / 8.00 |
 
 ## Reproduce
 
@@ -46,29 +53,57 @@ Tests live in [`tests/models/qwen36_35b_a3b`](../../../tests/models/qwen36_35b_a
 `--cache-only`.
 
 ```sh
-nix develop -c cmake --build --preset gpu-test \
-  --target qwen36_35b_a3b_tests qwen36_35b_a3b_model_tests qwen36_35b_a3b_gpu_probe
-nix develop -c ctest --preset gpu-full -R '^qwen36_35b_a3b\.'
+# Identity; the CPU build is enough.
+nix develop -c cmake --preset cpu-test
+nix develop -c cmake --build --preset cpu-test --target qwen36_35b_a3b_inventory
+build/cpu-test/tests/models/qwen36_35b_a3b/qwen36_35b_a3b_inventory --model "$MODEL"
+sha256sum "$MODEL"
+
+# Operators and full model
+nix develop -c cmake --build --preset gpu-test --target qwen36_35b_a3b_tests \
+  qwen36_35b_a3b_model_tests qwen36_35b_a3b_gpu_probe chat_template_hf_token_golden_test
+GUFO_QWEN36_GGUF="$MODEL" nix develop -c ctest --preset gpu-full \
+  -R '^chat_template_hf_token_golden_test$' --output-on-failure
+nix develop -c ctest --preset gpu-full -R '^qwen36_35b_a3b\.' --output-on-failure
 build/gpu-test/tests/models/qwen36_35b_a3b/qwen36_35b_a3b_session_test --model "$MODEL"
 build/gpu-test/tests/models/qwen36_35b_a3b/qwen36_35b_a3b_snapshot_test --model "$MODEL"
 
-# llama.cpp agreement, against a running llama-server on the same file
+# llama.cpp agreement, against a running llama-server b11069 on the same file
 python3 tests/models/qwen36_35b_a3b/llama_parity.py \
   --probe build/gpu-test/tests/models/qwen36_35b_a3b/qwen36_35b_a3b_gpu_probe \
   --model "$MODEL" --url http://127.0.0.1:8080
+
+# CLI
+./result/bin/gufo prompt -m "$MODEL" -p "$PROMPT" -n 256 --temperature 0 -v
+./result/bin/gufo prompt -m "$MODEL" -p "$PROMPT" -n 256 --temperature 0 -v \
+  --speculative mtp
+./result/bin/gufo bench -m "$MODEL" --validate-prefill 2048
+
+# Serving; repeat with --speculative mtp, a new --output and --suite metrics
+nix develop -c python3 tests/functional/run.py --record-baseline \
+  --output "$OUT/ar" --sampling-preset qwen36 --suite all \
+  --expected-input-modalities text -- \
+  ./result/bin/gufo serve llm --model "$MODEL" --sessions 4
 ```
 
 ## Benchmark method
 
-All tables measured October 3, 2026 with the production `nix build` binary
-and llama.cpp `b11069` on the same file; one warmed sample per point, greedy,
-thinking off. The llama.cpp AR 12,288 row and the Gufo MTP 12,288 rows were
-measured again after interference from the host's other GPU service.
+Planned for every table: the production `nix build` binary and llama.cpp
+`b11069` on the same file; one warmed sample per point, greedy, thinking off.
 Single-user uses pp2048/tg128 over a cached prefix; MTP pp is the maximum
 across mixed/repetitive workloads. C1/2/4/6/8 use the same d0 prompts; every
-session prefills before measured tg128. Gufo multi-user MTP completions match
-its C1 AR references. Loading: cold model file (evicted with
+session prefills before measured tg128. Loading: cold model file (evicted with
 `POSIX_FADV_DONTNEED`, zero resident pages verified), C1/MTP/capacity 262144.
 Memory: C1/AR/capacity 133121, peak global HIP allocation including idle
-memory. Commands and identities are in [artifacts](artifacts/bench.json) and
-the [benchmark workflow](../../../.agents/skills/benchmark-model/SKILL.md).
+memory. Workloads are declared in [bench.json](artifacts/bench.json); follow
+the [benchmark workflow](../../../.agents/skills/benchmark-model/SKILL.md) and
+record the Gufo binary SHA-256 prefix and the file identity with the results.
+
+```sh
+nix develop -c python3 tools/bench/model-bench.py --model qwen3.6-35b-a3b \
+  --gguf "$MODEL" run --target gufo
+nix develop -c nix shell .#llama-cpp-reference -c python3 \
+  tools/bench/model-bench.py --model qwen3.6-35b-a3b --gguf "$MODEL" \
+  run --target reference
+nix develop -c python3 tools/bench/model-bench.py --model qwen3.6-35b-a3b render
+```
